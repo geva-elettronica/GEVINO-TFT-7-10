@@ -1,0 +1,12 @@
+# Auto detect text files and perform LF normalization
+* text=auto
+
+# Treat binary assets as binary (no EOL/CRLF munging)
+*.bin binary
+*.pdf binary
+*.dll binary
+*.exe binary
+*.mp4 binary
+*.jpg binary
+*.dwg binary
+*.zip binary

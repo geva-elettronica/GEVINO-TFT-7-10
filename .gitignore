@@ -1,0 +1,18 @@
+# Arduino build
+build/
+*.hex
+*.elf
+*.map
+
+# Note: *.bin is NOT ignored here on purpose — the examples ship image/font
+# data as .bin files (e.g. All_76_Pic_65K.bin, docs/font.bin). Compiled sketch
+# binaries live under build/ and are already ignored.
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor
+.vscode/
+*.swp

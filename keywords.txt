@@ -1,0 +1,89 @@
+#######################################
+# Syntax Coloring Map for GEVINO TFT
+#######################################
+
+#######################################
+# Datatypes (KEYWORD1)
+#######################################
+
+Timer	KEYWORD1
+RA8876	KEYWORD1
+analogResult	KEYWORD1
+
+#######################################
+# Methods and Functions (KEYWORD2)
+#######################################
+
+gevino_io_setup	KEYWORD2
+updateIO	KEYWORD2
+analogPolling	KEYWORD2
+analogEnable	KEYWORD2
+analogReadExtended	KEYWORD2
+analogGain	KEYWORD2
+analogReference2	KEYWORD2
+analogReferenceCompensation	KEYWORD2
+analogCalibrate	KEYWORD2
+analogPrescaler	KEYWORD2
+analogReset	KEYWORD2
+analogDifferential	KEYWORD2
+analogDifferentialRaw	KEYWORD2
+reset	KEYWORD2
+stato	KEYWORD2
+fronte	KEYWORD2
+tempo	KEYWORD2
+
+#######################################
+# Constants (LITERAL1)
+#######################################
+
+In0	LITERAL1
+In1	LITERAL1
+In2	LITERAL1
+In3	LITERAL1
+In4	LITERAL1
+In5	LITERAL1
+In6	LITERAL1
+In7	LITERAL1
+In8	LITERAL1
+In9	LITERAL1
+In10	LITERAL1
+In11	LITERAL1
+Out0	LITERAL1
+Out1	LITERAL1
+Out2	LITERAL1
+Out3	LITERAL1
+Out4	LITERAL1
+Out5	LITERAL1
+Out6	LITERAL1
+Out7	LITERAL1
+setOut0	LITERAL1
+resOut0	LITERAL1
+setOut1	LITERAL1
+resOut1	LITERAL1
+setOut2	LITERAL1
+resOut2	LITERAL1
+setOut3	LITERAL1
+resOut3	LITERAL1
+setOut4	LITERAL1
+resOut4	LITERAL1
+setOut5	LITERAL1
+resOut5	LITERAL1
+setOut6	LITERAL1
+resOut6	LITERAL1
+setOut7	LITERAL1
+resOut7	LITERAL1
+setReset	LITERAL1
+resReset	LITERAL1
+setLed	LITERAL1
+resLed	LITERAL1
+set_Rs485_TxEn	LITERAL1
+res_Rs485_TxEn	LITERAL1
+Rs485_TxEn	LITERAL1
+TFT_CS	LITERAL1
+SD_CS	LITERAL1
+ETH_CS	LITERAL1
+CH376_CS	LITERAL1
+CH376_INT	LITERAL1
+TouchInt	LITERAL1
+latchPinO	LITERAL1
+latchPinI	LITERAL1
