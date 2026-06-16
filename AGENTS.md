@@ -204,3 +204,158 @@ they are tuned for a resource-constrained SAMD21:
 ### Resource-constrained compatibility
 10. Minimise JavaScript — prefer pure HTML/CSS. Avoid external CSS/JS frameworks that inflate the
     firmware size. Prefer direct links over JavaScript event listeners where possible.
+
+---
+
+## Building a touchscreen GUI with GUIslice (glass theme)
+
+GUIslice (ImpulseAdventure) runs on the GEVINO TFT through a GEVINO-specific display driver
+(`DRV_DISP_ADAGFX_RA8876_GV`, which wraps the `gevinoTFT_RA8876` class) plus the FT5206 touch
+driver. It is the fastest way to build a full touchscreen HMI: pages, buttons, text, sliders,
+gauges, keypads, etc. Reproduce the reference look (welcome splash → blue "glass" theme with
+image buttons, white text, a DAC slider with a glass thumb, and a multi-tab font browser) by
+following this section verbatim. A complete worked example lives in
+[`GUIslice/examples/arduino/GEVINO_TFT/`](../GUIslice/examples/arduino/GEVINO_TFT/).
+
+### One-time setup
+- **Libraries:** **GUIslice** (this GEVA fork — it must contain the `DRV_DISP_ADAGFX_RA8876_GV`
+  driver and export `RA8876* gslc_GevinoDisp(void)`) and **FT5206** (sumotoy). The GEVINO TFT
+  library must contain, in `src/`: the orientation `font.h` + `fontExt.h` (copy from
+  `src/Horizzontal/` for the 1024×600 landscape set) and `src/glass/All_76_Pic_65K.h`.
+- **Config:** in `GUIslice/src/GUIslice_config.h` enable
+  `#include "../configs/ard-shld-gevino_tft.h"` (selects RA8876_GV + FT5206; `TFT_CS`=42,
+  touch `INT`=38, `SD_CS`=12).
+- **Flash:** program `font.bin` (fonts) and the glass `All_76_Pic_65K.bin` (images) into the
+  display flash — put them on the SD card and call `CopySDonFlash()` once.
+- **Board:** Arduino Zero (Native USB Port).
+
+### Non-negotiable rules
+1. **Include order.** The images header must come right after the board header so it supplies
+   the `INFO` typedef and `gevinoTFT_RA8876.h` skips its own (`gevino_tft_io.h` defines
+   `pic_def` for exactly this reason):
+   ```cpp
+   #include "gevino_tft_io.h"          // board I/O (also defines pic_def, code)
+   #include "glass/All_76_Pic_65K.h"   // flash images: BINARY_INFO + PICTURE_NAME (+ INFO typedef)
+   #include "GUIslice.h"
+   #include "GUIslice_drv.h"
+   #include "elem/XSlider.h"           // only if you use sliders
+   #include "fontExt.h"                // GEVA font types + extern declarations
+   #include "Horizzontal/font.h"       // GEVA font definitions (orientation-specific)
+   extern "C" RA8876* gslc_GevinoDisp(void);   // driver accessor: the live display instance
+   ```
+   If a project uses **no** flash images, drop the images include and instead `#undef pic_def`
+   immediately before `fontExt.h`, so `gevinoTFT_RA8876.h` provides `INFO` itself.
+2. **Call `gevino_io_setup()` in `setup()` BEFORE `gslc_Init()`** (it brings up SPI, raises the
+   shared chip-selects SD/ETH/CH376 and resets the FT5206). `gslc_Init()` then runs
+   `RA8876::init()` (which also copies the fonts to canvas RAM) and `FT5206::begin()`.
+3. **Route GUIslice debug to `SerialUSB`** via `gslc_InitDebug()` — `Serial` is the Wi-Fi/BT port.
+4. The panel is native **1024×600 landscape**, no rotation; color is standard **RGB565**.
+
+### Fonts
+`gslc_FontSet(&gui, fontId, GSLC_FONTREF_PTR, &notoSans_32pt, 1)` selects a GEVA flash font.
+- GEVA glyphs blit at their **native size** — the size/scale argument is ignored (pass `1`);
+  to change size, point at a bigger flash font.
+- Families: `notoSans` / `notoSansBold` / `notoSansItal`, `notoSansMono` / `notoSansMonoBold`,
+  `notoSerif` / `notoSerifBold`; sizes `8,12,20,32,48,64,80,96,112` pt
+  (e.g. `&notoSansBold_48pt`).
+- Pass `NULL` instead for the RA8876 internal ROM font (there the scale arg is a 1..4 magnifier).
+- You can re-point a font slot at run time (`gslc_FontSet` rewrites it cheaply); after doing so
+  call `gslc_InvalidateRgnScreen(&gui); gslc_PageRedrawSet(&gui, true);` to repaint cleanly.
+
+### Glass theme
+```cpp
+#define GEVA_BLUE_565  RGB565(0x23, 0x90, 0xEC)          // for native RA8876 calls
+#define GEVA_BLUE_COL  ((gslc_tsColor){ 0x23, 0x90, 0xEC }) // for GUIslice calls
+...
+gslc_SetBkgndColor(&gui, GEVA_BLUE_COL);                 // background 0x2390ec
+```
+**White text without black boxes.** GUIslice text elements default to a *black* fill. Set the
+fill to the background blue so it looks transparent AND clears the previous value on update
+(essential for any text you change at run time — otherwise old glyphs pile up):
+```cpp
+gslc_ElemSetTxtCol(&gui, pRef, GSLC_COL_WHITE);
+gslc_ElemSetCol(&gui, pRef, GEVA_BLUE_COL, GEVA_BLUE_COL, GEVA_BLUE_COL);
+```
+(For purely static text on a page that always full-redraws, `gslc_ElemSetFillEn(&gui,pRef,false)`
+also works.)
+
+**Glass image buttons.** The flash holds glass button graphics in pressed+released pairs:
+rectangles `251/146/105` wide × `70/55/40` tall, and rounds `31/48/60/70` (enum names like
+`glass_rect_251_70_released` / `_pressed`). A DMA blit is **unscaled**, so the button rect MUST
+equal the image size. Create a normal GUIslice button, then override its drawing with a callback
+that blits the glass image (pressed when "glowing") and draws the white label centred on top;
+touch still goes through the button's own touch callback:
+```cpp
+static void DrawGlassBtn(void* pvGui, void* pvElemRef,
+                         uint16_t nImgRel, uint16_t nImgPrs,
+                         const FONT_INFO* pFont, int16_t w, int16_t h) {
+  gslc_tsGui*     pGui  = (gslc_tsGui*)pvGui;
+  gslc_tsElemRef* pRef  = (gslc_tsElemRef*)pvElemRef;
+  gslc_tsElem*    pElem = gslc_GetElemFromRef(pGui, pRef);
+  RA8876*         tft   = gslc_GevinoDisp();
+  int16_t x = pElem->rElem.x, y = pElem->rElem.y;
+  tft->pic_b(&BINARY_INFO[gslc_ElemGetGlow(pGui, pRef) ? nImgPrs : nImgRel], x, y);
+  const char* s = pElem->pStrBuf;
+  if (s && s[0]) {
+    int16_t bx, by; uint16_t bw, bh;
+    tft->setFont(pFont); tft->setTextColor(WHITE);          // WHITE = transparent bg (chroma key)
+    tft->getTextBounds(s, 0, 0, &bx, &by, &bw, &bh);
+    tft->setCursor(x + (w - (int16_t)bw) / 2, y + (h - (int16_t)bh) / 2);
+    tft->print(s);
+  }
+  gslc_ElemSetRedraw(pGui, pRef, GSLC_REDRAW_NONE);         // a draw callback MUST clear the flag
+}
+bool CbDrawBtnBig(void* g, void* e, gslc_teRedrawType r) { (void)r;
+  DrawGlassBtn(g, e, glass_rect_251_70_released, glass_rect_251_70_pressed, &notoSans_20pt, 251, 70);
+  return true; }
+...
+// label "LED ON" is static -> bufMax 0; for a label you change at run time pass a writable buffer
+pRef = gslc_ElemCreateBtnTxt(&gui, E_BTN, E_PG, (gslc_tsRect){x, y, 251, 70}, (char*)"LED ON", 0,
+                             E_FONT_ANY, &CbBtn);
+gslc_ElemSetDrawFunc(&gui, pRef, &CbDrawBtnBig);
+```
+`pic_b()`/DMA is self-contained (it doesn't change the canvas / active window / colour depth),
+so it interleaves safely with GUIslice's own drawing.
+
+**Slider with a glass thumb.** Override the XSlider drawing only; the XSlider keeps the
+touch/drag and the position callback. Match the XSlider thumb size to the image (31):
+```cpp
+bool CbDrawSlider(void* pvGui, void* pvElemRef, gslc_teRedrawType r) { (void)r;
+  gslc_tsGui* pGui = (gslc_tsGui*)pvGui; gslc_tsElemRef* pRef = (gslc_tsElemRef*)pvElemRef;
+  gslc_tsElem* pElem = gslc_GetElemFromRef(pGui, pRef); RA8876* tft = gslc_GevinoDisp();
+  int16_t x=pElem->rElem.x, y=pElem->rElem.y, w=pElem->rElem.w, h=pElem->rElem.h, T=31;
+  int16_t pos = gslc_ElemXSliderGetPos(pGui, pRef);                       // 0..100
+  tft->fillRect(x, y, x+w-1, y+h-1, GEVA_BLUE_565);                       // clear (erase old thumb)
+  tft->fillRect(x+T/2, y+h/2-2, x+w-1-T/2, y+h/2+2, WHITE);               // track
+  tft->pic_b(&BINARY_INFO[glass_round_31_released],
+             x + (int16_t)((int32_t)pos * (w-T) / 100), y + (h-T)/2);     // thumb
+  gslc_ElemSetRedraw(pGui, pRef, GSLC_REDRAW_NONE); return true; }
+...
+pRef = gslc_ElemXSliderCreate(&gui, E_SLIDER, E_PG, &sSlider, (gslc_tsRect){x,y,640,50},
+                              0, 100, 0, 31, false);
+gslc_ElemXSliderSetPosFunc(&gui, pRef, &CbSliderPos);     // CbSliderPos drives analogWrite(DAC0, pos*1023/100)
+gslc_ElemSetDrawFunc(&gui, pRef, &CbDrawSlider);
+```
+
+**Welcome splash (N seconds).** Make it a page and switch away with a `Timer` in `loop()` — do
+not block with `delay()`:
+```cpp
+Timer tWelcome(5000); bool bWelcome = true;
+// in setup(), after building the pages:
+gslc_SetPageCur(&gui, E_PG_WELCOME); tWelcome.reset();
+// in loop():
+gslc_Update(&gui);
+if (bWelcome && tWelcome.stato()) { bWelcome = false; gslc_SetPageCur(&gui, E_PG_MAIN); }
+```
+
+### Wiring the GUI to the board
+Inside touch / position callbacks, use the board macros directly: `setOut0`/`resOut0`,
+`setLed`/`resLed`, read `In0`, drive the analog output with `analogWrite(DAC0, value)` (0..1023).
+Call `updateIO()` once per `loop()` to refresh the shift-register I/O, and use the bundled
+`Timer` class for periodic UI updates. This is how the GUI becomes a real PLC HMI: buttons and
+sliders read inputs and drive opto outputs / the DAC, all non-blocking.
+
+### Sizing reminders for `gslc_Init`
+`MAX_PAGE`, the per-page element arrays (`gslc_tsElem` / `gslc_tsElemRef`) and `MAX_FONT` must be
+big enough for everything you create. A custom-drawn slider needs `gslc_tsXSlider` storage.
+Keep totals modest — the SAMD21 has 32 KB RAM.

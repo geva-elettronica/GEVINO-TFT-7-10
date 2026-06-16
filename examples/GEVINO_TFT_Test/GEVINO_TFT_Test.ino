@@ -118,7 +118,17 @@ void setup() {
   else               SerialUSB.println("RAIO controller FAIL");
 
   tft.selectInternalFont(RA8876_FONT_SIZE_32);
-  CopySDonFlash();          // If All_76_Pic_65K.bin or font.bin exist on SD, copy them to flash.
+
+  // SD card check only. The font/image copy to flash is now done automatically
+  // at the end of tft.init() (RA8876::copySDtoFlash), so the test just reports
+  // whether the SD is readable.
+  if ( sd.begin(12, SD_SCK_MHZ(12)) ) {
+    tft.println("SD ok");
+    SerialUSB.println("SD ok");
+  } else {
+    tft.println("SD fail");
+    SerialUSB.println("SD fail");
+  }
 
   // Draw the "GEVA" logo in blue as a visual "I am alive" marker.
   tft.setFont(&notoSansBold_64pt);

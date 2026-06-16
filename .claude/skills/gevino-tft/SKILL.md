@@ -1,6 +1,6 @@
 ---
 name: gevino-tft
-description: Use when writing Arduino/C++ firmware for the GEVA GEVINO TFT HMI PLC (7" or 10" capacitive-touch, 1024x600, Raio RA8876, SAMD21, Arduino Zero compatible). Covers the single-header board I/O, shift-register I/O (updateIO), the RA8876 display, 7"/10" touch auto-detection (FT5206/GT9271), front USB stick (CH376), DMA images, non-blocking ADC + DAC output, RS485 + Modbus, Ethernet (W5500), SD (SdFat), the Timer class, and HTML web-UI conventions.
+description: Use when writing Arduino/C++ firmware for the GEVA GEVINO TFT HMI PLC (7" or 10" capacitive-touch, 1024x600, Raio RA8876, SAMD21, Arduino Zero compatible). Covers the single-header board I/O, shift-register I/O (updateIO), the RA8876 display, 7"/10" touch auto-detection (FT5206/GT9271), front USB stick (CH376), DMA images, non-blocking ADC + DAC output, RS485 + Modbus, Ethernet (W5500), SD (SdFat), the Timer class, building a touchscreen GUI with GUIslice (glass theme), and HTML web-UI conventions.
 ---
 
 # GEVINO TFT firmware
@@ -71,6 +71,17 @@ void loop() {
 - **Ethernet (W5500):** `Ethernet.init(ETH_CS)` (`ETH_CS` = 5). **SD:** SdFat (`SD_CS` = 12).
   **EEPROM emulation:** FlashStorage by cmaglie.
 - **Timer:** non-blocking `Timer` (`reset`/`stato`/`fronte`/`tempo`).
+
+## Touchscreen GUI with GUIslice (recommended for HMIs)
+To build a touchscreen UI (pages, buttons, text, sliders, gauges, keypads) use **GUIslice** with
+the GEVINO driver `DRV_DISP_ADAGFX_RA8876_GV` + FT5206 touch. Enable
+`configs/ard-shld-gevino_tft.h` in `GUIslice_config.h`, call `gevino_io_setup()` before
+`gslc_Init()`, and respect the include order (`gevino_tft_io.h` → `glass/All_76_Pic_65K.h` →
+GUIslice → `fontExt.h` → orientation `font.h`). The full recipe — GEVA flash fonts, the **glass
+theme** (0x4c9de4 bg, white text, glass image buttons via `gslc_GevinoDisp()` + a draw callback +
+`pic_b()`, glass-round slider thumb, welcome splash) — is in the **"Building a touchscreen GUI with
+GUIslice (glass theme)" section of AGENTS.md**, with a worked example in
+`GUIslice/examples/arduino/GEVINO_TFT/`.
 
 ## HTML web UI
 If you build a web interface, follow the resource-constrained conventions in **AGENTS.md**

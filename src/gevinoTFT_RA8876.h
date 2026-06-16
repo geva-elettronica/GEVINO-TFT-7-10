@@ -394,8 +394,16 @@ public:
   RA8876(int csPin, int resetPin = 0);
 
   // Init
-  bool init();   // 0 = H   3 = V  
+  bool init();   // 0 = H   3 = V
   void initExternalFontRom(int spiIf, enum ExternalFontRom chip);
+
+  // SD -> serial-flash auto-loader. init() calls copySDtoFlash() at the end: if
+  // the SD card holds font.bin / All_76_Pic_65K.bin they are (re)written into the
+  // display serial flash. Without an SD card (or those files) it does nothing, so
+  // it is safe to run on every boot. (Needs the SdFat library.)
+  void copySDtoFlash(void);
+  void writeFlash(unsigned long flash_addr, const char *file, byte erase); // erase: 0=none, 1=all, 2=pic area
+  unsigned char flashReadStatus(void);
 
   // Dimensions
   int getWidth() { return m_width; };

@@ -2,6 +2,7 @@
 
 #include "gevinoTFT_RA8876.h"
 #include "fontEXT.h"
+#include <SdFat.h>      // copySDtoFlash(): auto-load font/image .bin from SD at the end of init()
 
 SdramInfo defaultSdramInfo =
 {
@@ -572,12 +573,135 @@ bool RA8876::init(void)
 //  SetFont(&notoSans_8pt);
   setTextColor(0xFFFFFF);  
   
-  writeReg(RA8876_REG_SPI_DIVSOR, 0); 
-  
+  writeReg(RA8876_REG_SPI_DIVSOR, 0);
+
   Select_SFI_Dual_Mode_Dummy_8T_3Bh();
-//void Select_SFI_Dual_Mode_Dummy_4T_BBh(void);  
-  
+//void Select_SFI_Dual_Mode_Dummy_4T_BBh(void);
+
+  // If an SD card with font.bin / All_76_Pic_65K.bin is inserted, (re)load them
+  // into the display serial flash. Does nothing when no SD / no such files.
+  copySDtoFlash();
+
   return true;
+}
+
+// =============================================================================
+// SD -> serial-flash auto-loader (was CopySDonFlash/WriteFlash in
+// gevino_tft_display.h; moved into the class so init() runs it on every boot).
+// =============================================================================
+unsigned char RA8876::flashReadStatus(void) {   // Serial flash Read Status Register (0x05)
+  unsigned char temp;
+  nSS_Active();
+  SPI_Master_FIFO_Data_Put(0x05);
+  delay(1);
+  temp = SPI_Master_FIFO_Data_Put(0xff);        // dummy cycle, read back value
+  nSS_Inactive();
+  return temp;
+}
+
+void RA8876::copySDtoFlash(void) {
+  SdFat sd;
+  if (!sd.begin(12, SD_SCK_MHZ(12))) return;     // no card / not ready -> nothing to do
+  selectInternalFont(RA8876_FONT_SIZE_16);       // valid text mode for the writeFlash() progress prints
+  bool wroteFont = false;
+  if (sd.exists("font.bin")) {
+    writeFlash(0, "font.bin", 1);                // erase whole chip + write fonts
+    wroteFont = true;
+  }
+  if (sd.exists("All_76_Pic_65K.bin")) {
+    writeFlash(Pic_Offset, "All_76_Pic_65K.bin", wroteFont ? 0 : 2);
+  }
+  if (wroteFont) FontCanvasLoad();               // reload fonts to canvas RAM (NOT a full re-init)
+}
+
+void RA8876::writeFlash(unsigned long flash_addr, const char *file, byte erase) {
+  unsigned long TimeToWrite = millis(), BlockAddress = flash_addr;
+  int wDiv = 0;
+  unsigned short i;
+  uint8_t buffer[260];
+  SdFile ff;
+  if (!ff.open(file, FILE_READ)) return;
+  Enable_SFlash_SPI();
+#ifdef WriteC_0
+  Select_nSS_drive_on_xnsfcs0();
+#else
+  Select_nSS_drive_on_xnsfcs1();
+#endif
+  SPI_Clock_Period(1);
+#ifdef Flash_256Mb
+  nSS_Active();
+  SPI_Master_FIFO_Data_Put(0xB7);                // enter 4-byte address mode
+  delay(1);
+  nSS_Inactive();
+#endif
+  print("  Flash Write ");
+
+  if (erase == 1) {                              // erase whole chip
+    do { nSS_Active(); SPI_Master_FIFO_Data_Put(0x06); delay(1); nSS_Inactive(); delay(1); }
+    while (!(flashReadStatus() & 0x02));
+    nSS_Active(); SPI_Master_FIFO_Data_Put(0x60); delay(1); nSS_Inactive();
+    while (flashReadStatus() & 0x01);
+    nSS_Active(); SPI_Master_FIFO_Data_Put(0x04); delay(1); nSS_Inactive();
+    while (flashReadStatus() & 0x01);
+    delay(10);
+    print("Eall");
+  }
+
+  if (erase == 2) {                              // erase from BlockAddress to end
+    do {
+      do { nSS_Active(); SPI_Master_FIFO_Data_Put(0x06); delayMicroseconds(50); nSS_Inactive(); delayMicroseconds(50); }
+      while (!(flashReadStatus() & 0x02));
+      nSS_Active();
+      SPI_Master_FIFO_Data_Put(0xD8);
+#ifdef Flash_256Mb
+      SPI_Master_FIFO_Data_Put(BlockAddress >> 24);
+#endif
+      SPI_Master_FIFO_Data_Put(BlockAddress >> 16);
+      SPI_Master_FIFO_Data_Put(BlockAddress >> 8);
+      SPI_Master_FIFO_Data_Put(BlockAddress);
+      delayMicroseconds(50);
+      nSS_Inactive();
+      while (flashReadStatus() & 0x01);
+      BlockAddress += 0x10000;
+    } while (BlockAddress < 0xFFFFFF);
+    nSS_Active(); SPI_Master_FIFO_Data_Put(0x04); delay(1); nSS_Inactive();
+    while (flashReadStatus() & 0x01);
+    delay(10);
+    print("Epic");
+  }
+
+  do {                                           // SD -> SAMD -> RA8876 -> flash
+    ff.read(buffer, 256);
+    do { nSS_Active(); SPI_Master_FIFO_Data_Put(0x06); delayMicroseconds(50); nSS_Inactive(); }
+    while (!(flashReadStatus() & 0x02));
+    delayMicroseconds(50);
+    nSS_Active();
+    SPI_Master_FIFO_Data_Put(0x02);              // page program
+#ifdef Flash_256Mb
+    SPI_Master_FIFO_Data_Put(flash_addr >> 24);
+#endif
+    SPI_Master_FIFO_Data_Put(flash_addr >> 16);
+    SPI_Master_FIFO_Data_Put(flash_addr >> 8);
+    SPI_Master_FIFO_Data_Put(flash_addr);
+    for (i = 0; i < 256; i++) { delayMicroseconds(1); SPI_Master_FIFO_Data_Put(buffer[i]); }
+    nSS_Inactive();
+    while (flashReadStatus() & 0x01);
+    flash_addr += 0x0100;
+    delayMicroseconds(50);
+    if (++wDiv >= 400) { print("w"); wDiv = 0; }
+  } while (ff.available());
+
+  nSS_Active(); SPI_Master_FIFO_Data_Put(0x04); delay(1); nSS_Inactive();   // write disable
+  while (flashReadStatus() & 0x01);
+  flashReadStatus();
+  Check_2D_Busy();
+  nSS_Active(); SPI_Master_FIFO_Data_Put(0xE9); delay(1); nSS_Inactive();   // exit 4-byte mode
+  delay(10);
+  Disable_SFlash_SPI();
+  ff.close();
+  print(" on ");
+  print((millis() - TimeToWrite) / 1000);
+  print(" Sec");
 }
 
 void RA8876::initExternalFontRom(int spiIf, enum ExternalFontRom chip)
