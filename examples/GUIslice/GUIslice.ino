@@ -65,21 +65,26 @@ extern "C" RA8876* gslc_GevinoDisp(void);
 #define GEVA_BLUE_565   RGB565(0x23, 0x90, 0xEC)
 #define GEVA_BLUE_COL   ((gslc_tsColor){ 0x23, 0x90, 0xEC })
 
+// Darker shade used to dim the welcome splash background
+#define GEVA_DARK_COL   ((gslc_tsColor){ 0x0A, 0x1C, 0x2E })
+
 // -----------------------------------------------------------------------------
 // Enumerations for pages, elements and fonts
 // -----------------------------------------------------------------------------
 // Pages
 enum { E_PG_WELCOME, E_PG_MAIN, E_PG_FONTS };
 
-// Welcome (splash) elements
-enum { E_W_TITLE, E_W_SUB, E_W_URL, E_W_THEME };
+// Welcome (splash) elements. E_W_BG is a full-screen dark box drawn first so it
+// darkens the blue background; the texts are drawn on top of it.
+enum { E_W_BG, E_W_TITLE, E_W_SUB, E_W_URL, E_W_THEME };
 
 // Main-page elements. The 8 output-LED IDs are contiguous so (nId - E_LED0)
-// gives the output index 0..7.
+// gives the output index 0..7; likewise the 8 input-LED IDs (nId - E_LEDI0).
 enum { E_BOX, E_TITLE, E_TXT_COUNT, E_TXT_IN0,
        E_BTN_LED_ON, E_BTN_LED_OFF, E_BTN_OUT0,
        E_LBL_DAC, E_SLIDER_DAC, E_TXT_DAC, E_BTN_FONTS, E_BTN_MODE,
-       E_LBL_OUT, E_LED0, E_LED1, E_LED2, E_LED3, E_LED4, E_LED5, E_LED6, E_LED7 };
+       E_LBL_OUT, E_LED0, E_LED1, E_LED2, E_LED3, E_LED4, E_LED5, E_LED6, E_LED7,
+       E_LBL_IN, E_LEDI0, E_LEDI1, E_LEDI2, E_LEDI3, E_LEDI4, E_LEDI5, E_LEDI6, E_LEDI7 };
 
 // Font-gallery page elements. The 7 family tab IDs are contiguous so that
 // (nId - E_TAB_SANS) gives the family index 0..6.
@@ -98,8 +103,8 @@ enum { E_FONT_TITLE, E_FONT_TXT, E_FONT_TAB, E_FONT_WBIG, E_FONT_ITAL,
 // GUIslice instances
 // -----------------------------------------------------------------------------
 #define MAX_PAGE             3
-#define MAX_ELEM_PG_WELCOME  4
-#define MAX_ELEM_PG_MAIN     21
+#define MAX_ELEM_PG_WELCOME  5
+#define MAX_ELEM_PG_MAIN     30
 #define MAX_ELEM_PG_FONTS    18
 
 gslc_tsGui      m_gui;
@@ -125,6 +130,7 @@ gslc_tsElemRef* m_pBtnMode    = NULL;
 gslc_tsElemRef* m_pFamName    = NULL;
 gslc_tsElemRef* m_apSample[9] = { NULL };
 gslc_tsElemRef* m_apLed[8]    = { NULL };   // 8 on-screen output LEDs (Out0..Out7)
+gslc_tsElemRef* m_apLedIn[8]  = { NULL };   // 8 on-screen input LEDs  (In0..In7)
 
 // External text buffers (config uses GSLC_LOCAL_STR = 0, so any text we want
 // to change at run time must point to a writable buffer with bufMax > 0)
@@ -171,6 +177,18 @@ static bool outState(uint8_t i) {            // current state of output Out0..Ou
 static void refreshLeds(void) {              // queue the 8 on-screen LEDs for redraw
   for (uint8_t i = 0; i < 8; i++) {
     if (m_apLed[i]) gslc_ElemSetRedraw(&m_gui, m_apLed[i], GSLC_REDRAW_INC);
+  }
+}
+static bool inState(uint8_t i) {             // current state of input In0..In7
+  switch (i) {
+    case 0: return In0;  case 1: return In1;  case 2: return In2;  case 3: return In3;
+    case 4: return In4;  case 5: return In5;  case 6: return In6;  case 7: return In7;
+  }
+  return false;
+}
+static void refreshLedsIn(void) {            // queue the 8 on-screen input LEDs for redraw
+  for (uint8_t i = 0; i < 8; i++) {
+    if (m_apLedIn[i]) gslc_ElemSetRedraw(&m_gui, m_apLedIn[i], GSLC_REDRAW_INC);
   }
 }
 static void allLightsOff(void) {
@@ -228,6 +246,7 @@ bool CbDrawBtnBig(void* pvGui, void* pvElemRef, gslc_teRedrawType eRedraw);
 bool CbDrawBtnTab(void* pvGui, void* pvElemRef, gslc_teRedrawType eRedraw);
 bool CbDrawSlider(void* pvGui, void* pvElemRef, gslc_teRedrawType eRedraw);
 bool CbDrawLed(void* pvGui, void* pvElemRef, gslc_teRedrawType eRedraw);
+bool CbDrawLedIn(void* pvGui, void* pvElemRef, gslc_teRedrawType eRedraw);
 void InitPageWelcome(void);
 void InitPageFonts(void);
 
@@ -443,6 +462,25 @@ bool CbDrawLed(void* pvGui, void* pvElemRef, gslc_teRedrawType eRedraw)
 }
 
 // -----------------------------------------------------------------------------
+// Input-LED drawing: blit the yellow glass LED (lit/off) for input In0..In7
+// -----------------------------------------------------------------------------
+bool CbDrawLedIn(void* pvGui, void* pvElemRef, gslc_teRedrawType eRedraw)
+{
+  (void)eRedraw;
+  gslc_tsGui*     pGui     = (gslc_tsGui*)pvGui;
+  gslc_tsElemRef* pElemRef = (gslc_tsElemRef*)pvElemRef;
+  gslc_tsElem*    pElem    = gslc_GetElemFromRef(pGui, pElemRef);
+  RA8876*         tft      = gslc_GevinoDisp();
+
+  uint8_t idx = (uint8_t)(pElem->nId - E_LEDI0);   // 0..7
+  tft->pic_b(&BINARY_INFO[inState(idx) ? glass_round_31_led_yellow : glass_round_31_led_off],
+             pElem->rElem.x, pElem->rElem.y);
+
+  gslc_ElemSetRedraw(pGui, pElemRef, GSLC_REDRAW_NONE);
+  return true;
+}
+
+// -----------------------------------------------------------------------------
 // Slider position callback
 // - Drives the GEVINO 10-bit analog output (DAC) and updates the value label
 // -----------------------------------------------------------------------------
@@ -547,6 +585,17 @@ void setup()
     gslc_ElemSetDrawFunc(&m_gui, m_apLed[i], &CbDrawLed);
   }
 
+  // 8 input LEDs (In0..In7), yellow glass symbols, just below the output row
+  pElemRef = gslc_ElemCreateTxt(&m_gui, E_LBL_IN, E_PG_MAIN, (gslc_tsRect){ 700, 215, 300, 36 },
+                                (char*)"Inputs 1-8", 0, E_FONT_TAB);
+  gslc_ElemSetTxtCol(&m_gui, pElemRef, GSLC_COL_WHITE);
+  gslc_ElemSetCol(&m_gui, pElemRef, GEVA_BLUE_COL, GEVA_BLUE_COL, GEVA_BLUE_COL);
+  for (uint8_t i = 0; i < 8; i++) {
+    m_apLedIn[i] = gslc_ElemCreateBox(&m_gui, E_LEDI0 + i, E_PG_MAIN,
+                     (gslc_tsRect){ (int16_t)(706 + i * 36), 255, 31, 31 });
+    gslc_ElemSetDrawFunc(&m_gui, m_apLedIn[i], &CbDrawLedIn);
+  }
+
   // Buttons (glass image buttons, 251x70). The row is spaced so OUT0 lines up
   // under the FONTS button (both at x = 720).
   pElemRef = gslc_ElemCreateBtnTxt(&m_gui, E_BTN_LED_ON, E_PG_MAIN, (gslc_tsRect){ 60, 330, 251, 70 },
@@ -604,6 +653,12 @@ void InitPageWelcome(void)
 
   gslc_PageAdd(&m_gui, E_PG_WELCOME, m_asElemWelcome, MAX_ELEM_PG_WELCOME,
                m_asElemRefWelcome, MAX_ELEM_PG_WELCOME);
+
+  // Full-screen dark box: darkens the blue background for the splash. Added
+  // first so the texts below are drawn on top of it.
+  pRef = gslc_ElemCreateBox(&m_gui, E_W_BG, E_PG_WELCOME, (gslc_tsRect){ 0, 0, 1024, 600 });
+  gslc_ElemSetCol(&m_gui, pRef, GEVA_DARK_COL, GEVA_DARK_COL, GEVA_DARK_COL);
+  gslc_ElemSetFillEn(&m_gui, pRef, true);
 
   pRef = gslc_ElemCreateTxt(&m_gui, E_W_TITLE, E_PG_WELCOME, (gslc_tsRect){ 0, 150, 1024, 70 },
                             (char*)"GEVA elettronica", 0, E_FONT_WBIG);
@@ -688,6 +743,12 @@ void loop()
   // In0..In3 and Out0 are direct GPIO and do not strictly need this, but
   // calling it keeps Out1..Out7 / In4..In11 live for richer programs.
   updateIO();
+
+  // Mirror the live input states on the yellow LED row: redraw only on change.
+  static uint8_t nInPrev = 0xFF;
+  uint8_t nInNow = 0;
+  for (uint8_t i = 0; i < 8; i++) { if (inState(i)) nInNow |= (uint8_t)(1 << i); }
+  if (nInNow != nInPrev) { nInPrev = nInNow; refreshLedsIn(); }
 
   // Digital-light show (DIGITAL mode only): while the slider is held the 8 lights
   // run (chase); on release they oscillate (-1,-2,+1,+2) and settle on the

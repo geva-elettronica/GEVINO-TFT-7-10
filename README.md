@@ -17,9 +17,11 @@ Designed and manufactured by **[GEVA Elettronica](https://www.gevaelettronica.it
 > Writing firmware with an AI coding assistant? Read **[AGENTS.md](AGENTS.md)** — the LLM/agent
 > programming guide for this board.
 
-[![GEVINO TFT demo video](https://img.youtube.com/vi/IzdNAdZBxVE/maxresdefault.jpg)](https://youtu.be/IzdNAdZBxVE)
+[![GEVINO TFT demo video](https://img.youtube.com/vi/LcdZlivZQaQ/maxresdefault.jpg)](https://youtu.be/LcdZlivZQaQ)
 
-▶ **[Watch the GEVINO TFT demo on YouTube](https://youtu.be/IzdNAdZBxVE)**
+▶ **Watch the GEVINO TFT demo on YouTube **
+
+in italiano:  https://youtu.be/gX--vZ-2GV4
 
 ---
 
