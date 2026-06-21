@@ -114,6 +114,12 @@ void setup() {
 
   // ---- Board level GPIO / shift-registers initialization ----
   gevino_io_setup();
+  // Probe the SPI link FIRST, before tft.init(). This is important: if the
+  // controller is dead, init() spins forever inside waitWriteFifo()/clearScreen()
+  // (readStatus() keeps returning 0xFF, bit7 never clears) and we would never
+  // get any further output - that is why only "Begin Test" was showing up.
+  tftSpiDiagnose();
+
   if( tft.init() )   SerialUSB.println("RAIO controller OK");
   else               SerialUSB.println("RAIO controller FAIL");
 
@@ -440,6 +446,95 @@ void loop() {
   }
 }
 
+
+// tftSpiDiagnose: run on every boot, BEFORE tft.init(), to report on the USB
+// console whether the controller actually answers on SPI. It must run before
+// init() because a dead controller makes init() hang forever in waitWriteFifo()
+// (readStatus() stuck at 0xFF) - so this is the only place guaranteed to print.
+// It does not rely on the display being initialized: it talks to the RA8876
+// directly over SPI and tries to distinguish three cases:
+//   1) no SPI answer at all  -> wiring / power / reset / CS problem
+//   2) SPI answers, register write/read-back works -> chip alive, the dark
+//      screen is downstream (PLL, SDRAM, backlight, panel timing)
+//   3) flaky / partial echo   -> marginal SPI (speed too high, long wires)
+//
+// All RA8876 members are public, so we drive the low level read/write helpers
+// directly. We set our own SPISettings here instead of trusting tft.m_spiSettings,
+// because init() may have bailed out before assigning it.
+void tftSpiDiagnose(void) {
+  SerialUSB.println();
+  SerialUSB.println("==== RA8876 SPI diagnosis ====");
+  SerialUSB.print  ("CS=D");          SerialUSB.print(tft.m_csPin);
+  SerialUSB.print  ("  RESET=");      SerialUSB.print(tft.m_resetPin);
+  SerialUSB.println("  (SPI mode 3, MSB first, 12 MHz)");
+
+  // Make sure the bus is up and CS is idle-high, regardless of how far init() got.
+  pinMode(tft.m_csPin, OUTPUT);
+  digitalWrite(tft.m_csPin, HIGH);
+  SPI.begin();
+  SPISettings diag = SPISettings(RA8876_SPI_SPEED, MSBFIRST, SPI_MODE3);
+  SPI.beginTransaction(diag);
+
+  // ---- 1) Status register: read it several times. -------------------------
+  // The RA8876 status byte must NOT be a constant 0x00 or 0xFF. A stuck value
+  // means MISO is never driven, i.e. the controller is not answering.
+  SerialUSB.print("Status reg x8: ");
+  uint8_t orAll = 0x00, andAll = 0xFF;
+  for (int i = 0; i < 8; i++) {
+    uint8_t s = tft.readStatus();
+    orAll  |= s;
+    andAll &= s;
+    if (s < 0x10) SerialUSB.print('0');
+    SerialUSB.print(s, HEX);
+    SerialUSB.print(' ');
+  }
+  SerialUSB.println();
+  if (orAll == 0x00)
+    SerialUSB.println(" -> MISO stuck LOW: no answer. Check 3V3, RESET, CS=D42, MISO and SCK wiring.");
+  else if (andAll == 0xFF)
+    SerialUSB.println(" -> MISO stuck HIGH: line floating / not driven by the controller.");
+  else
+    SerialUSB.println(" -> Status bits change: the SPI read path looks alive.");
+
+  // ---- 2) Write / read-back on a harmless R/W register --------------------
+  // Foreground colour R (0xD2) is a plain 8-bit R/W register with no side
+  // effect on a dark panel. If the chip echoes every pattern back, then CS +
+  // SCK + MOSI + MISO and the register file are all working.
+  const uint8_t pat[] = { 0xA5, 0x5A, 0x00, 0xFF, 0x3C };
+  uint8_t saved = tft.readReg(RA8876_REG_FGCR);
+  int okCount = 0;
+  for (uint8_t i = 0; i < sizeof(pat); i++) {
+    tft.writeReg(RA8876_REG_FGCR, pat[i]);
+    uint8_t rb = tft.readReg(RA8876_REG_FGCR);
+    SerialUSB.print("  FGCR wrote 0x");
+    if (pat[i] < 0x10) SerialUSB.print('0');
+    SerialUSB.print(pat[i], HEX);
+    SerialUSB.print(" read 0x");
+    if (rb < 0x10) SerialUSB.print('0');
+    SerialUSB.print(rb, HEX);
+    if (rb == pat[i]) { SerialUSB.println("  OK"); okCount++; }
+    else                SerialUSB.println("  MISMATCH");
+  }
+  tft.writeReg(RA8876_REG_FGCR, saved);   // restore the original value
+
+  if (okCount == (int)sizeof(pat))
+    SerialUSB.println(" -> Register R/W OK: RA8876 responds on SPI. If the panel is still dark,");
+  else if (okCount == 0)
+    SerialUSB.println(" -> No pattern echoed: SPI link broken or chip held in reset.");
+  else
+    SerialUSB.println(" -> Partial echo: marginal SPI - lower RA8876_SPI_SPEED or check wire length.");
+
+  // ---- 3) A couple of config registers as a coarse "is the core alive" probe.
+  SerialUSB.print  ("CCR=0x");  SerialUSB.print(tft.readReg(RA8876_REG_CCR), HEX);
+  SerialUSB.print  ("  MACR=0x"); SerialUSB.print(tft.readReg(RA8876_REG_MACR), HEX);
+  SerialUSB.print  ("  DPCR=0x"); SerialUSB.println(tft.readReg(RA8876_REG_DPCR), HEX);
+
+  if (okCount == (int)sizeof(pat))
+    SerialUSB.println("    suspect PLL/SDRAM/backlight/panel timing, not the SPI bus.");
+
+  SPI.endTransaction();
+  SerialUSB.println("==============================");
+}
 
 // testLeds: drives each output one at a time and verifies that the paired
 // input reports the expected state. The shift-register based I/O is
