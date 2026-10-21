@@ -12,11 +12,13 @@ arduino-cli with the **Arduino SAMD core**, board **Arduino Zero (Native USB Por
 with Cursor and OpenPLC.
 
 **7" vs 10":** same board, only the glass changes. Touch controller: 7" = FT5206 (I²C 0x38), 10" =
-GT9271 (I²C 0x5D). Probe both addresses at startup to auto-detect the panel.
+GT9271 (I²C 0x5D). The library drives both and auto-detects the panel — never write touch code by
+hand, call `gevino_touch_setup()` once and the same sketch runs on either model.
 
 ## Read these first
 - [`AGENTS.md`](../../../AGENTS.md) — the full programming guide (this skill is its short form).
 - [`src/gevino_tft_io.h`](../../../src/gevino_tft_io.h) — board I/O macros, ADC helpers, Timer.
+- [`src/gevino_tft_touch.h`](../../../src/gevino_tft_touch.h) — the 7"/10" touch API.
 - [`src/gevinoTFT_RA8876.h`](../../../src/gevinoTFT_RA8876.h) — the RA8876 display driver (`tft` object).
 
 ## Non-negotiable rules
@@ -61,7 +63,11 @@ void loop() {
 ## Subsystems (see AGENTS.md for full code)
 - **Display:** `tft` (class `RA8876`, `TFT_CS` = 42): `tft.init/clearScreen/setTextColor/print`,
   DMA full-screen images (~80 ms) from display flash; copy fonts/images from SD with `CopySDonFlash()`.
-- **Touch:** auto-detect FT5206 (7", 0x38) vs GT9271 (10", 0x5D) over `Wire`; `TouchInt` = D38.
+- **Touch:** `gevino_tft_touch.h` drives FT5206 (7", 0x38) and GT9271 (10", 0x5D) over `Wire`
+  (`TouchInt` = D38, no external library). `gevino_touch_setup()` probes and returns 7/10/0;
+  `gevino_touch_read(&x, &y)` gives one point, `gevino_touch_points(pts, n)` multi-touch — both in
+  screen coordinates (0…1023 / 0…599, axes already flipped). Also `gevino_touch_name()`,
+  `gevino_touch_is7()/is10()`, `gevino_touch_down()`.
 - **USB stick:** CH376 host (`CH376_CS` = 45, `CH376_INT` = 27) — see FlashUSB_Stick example.
 - **Analog:** non-blocking `analogPolling()` → `analogResult[0..4]`; 10-bit DAC output via
   `analogWrite(DAC0, ...)`. ADC helpers (`analogReadExtended`, `analogGain`, …) bundled in the header.
@@ -75,9 +81,12 @@ void loop() {
 ## Touchscreen GUI with GUIslice (recommended for HMIs)
 To build a touchscreen UI (pages, buttons, text, sliders, gauges, keypads) use **GUIslice** with
 the GEVINO driver `DRV_DISP_ADAGFX_RA8876_GV` + FT5206 touch. Enable
-`configs/ard-shld-gevino_tft.h` in `GUIslice_config.h`, call `gevino_io_setup()` before
-`gslc_Init()`, and respect the include order (`gevino_tft_io.h` → `glass/All_76_Pic_65K.h` →
-GUIslice → `fontExt.h` → orientation `font.h`). The full recipe — GEVA flash fonts, the **glass
+`configs/ard-shld-gevino_tft.h` in `GUIslice_config.h`, call `gevino_io_setup()` then
+`gevino_touch_setup()` before `gslc_Init()`, and respect the include order (`gevino_tft_io.h` →
+`glass/All_76_Pic_65K.h` → GUIslice → `fontExt.h` → orientation `font.h` → `gevino_tft_touch.h` →
+`gevino_tft_touch_gslc.h`). Call `gevino_touch_gui_update(&gui)` at the top of `loop()`, before
+`gslc_Update()`: it is a no-op on the 7" (GUIslice polls the FT5206 itself) and injects the GT9271
+points on the 10". The full recipe — GEVA flash fonts, the **glass
 theme** (0x4c9de4 bg, white text, glass image buttons via `gslc_GevinoDisp()` + a draw callback +
 `pic_b()`, glass-round slider thumb, welcome splash) — is in the **"Building a touchscreen GUI with
 GUIslice (glass theme)" section of AGENTS.md**, with a worked example in

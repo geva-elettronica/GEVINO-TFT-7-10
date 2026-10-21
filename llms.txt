@@ -2,7 +2,7 @@
 
 > GEVINO TFT is an affordable, Arduino Zero compatible HMI PLC with a 7" or 10" capacitive-touch TFT (1024x600, Raio RA8876 controller), built around the Microchip SAMD21 (32-bit ARM Cortex-M0+, 48 MHz, 256 KB flash, 32 KB RAM). The 7" and 10" models are the SAME board — only the glass changes (touch controller: 7" = FT5206, 10" = GT9271, auto-detected). It provides 12 opto-isolated inputs (4 high-speed/interrupt), 8 opto-isolated outputs (PNP/NPN/AC, 1A 30V), 4 analog inputs + 1 analog output, RS485, a front USB-stick reader (CH376), a rear micro-SD and optional Ethernet/Wi-Fi/Bluetooth/SIM800L/LoRa modules. Designed and manufactured by GEVA Elettronica (Italy); programmed with the Arduino IDE (Arduino SAMD core), Cursor or OpenPLC.
 
-This repository contains the board I/O support header, the RA8876 display driver, font tables, ready-to-flash examples, the hardware manual and datasheets, and a programming guide written specifically for LLMs and AI coding agents.
+This repository contains the board I/O support header, the RA8876 display driver, the 7"/10" capacitive-touch driver, font tables, ready-to-flash examples, the hardware manual and datasheets, and a programming guide written specifically for LLMs and AI coding agents.
 
 ## Documentation
 - [README](README.md): full product overview, technical specifications, complete pin map, 7"/10" differences, installation and quick start.
@@ -12,13 +12,16 @@ This repository contains the board I/O support header, the RA8876 display driver
 - [src/gevino_tft_io.h](src/gevino_tft_io.h): the board I/O header — pin/I-O macros, the extra SERCOM UARTs (Serial2/Serial3), shift-register I/O, board setup, bundled SAMD21 ADC helpers and the Timer class. Include it in ONE .ino, in the order: gevino_tft_io.h, All_76_Pic_65K.h, gevino_tft_display.h.
 - src/gevinoTFT_RA8876.h / .cpp: the Raio RA8876 display driver (the `tft` object).
 - src/gevino_tft_display.h: display/flash helper (copy fonts/images from SD to display flash).
+- [src/gevino_tft_touch.h](src/gevino_tft_touch.h) / .cpp: the capacitive-touch driver for both panels (7" FT5206 @ 0x38, 10" GT9271 @ 0x5D) over Wire, with auto-detection — gevino_touch_setup(), gevino_touch_read(), gevino_touch_points(). No external touch library needed; coordinates are returned in screen space.
+- src/gevino_tft_touch_gslc.h: GUIslice bridge — gevino_touch_gui_update(&gui) feeds either panel to a GUIslice GUI.
 - src/Horizzontal/, src/Vertical/: font tables for landscape / portrait orientation.
 - [keywords.txt](keywords.txt): Arduino IDE syntax highlighting.
 - [library.properties](library.properties): Arduino library metadata.
 
 ## Examples
 - [GEVINO_TFT_Test](examples/GEVINO_TFT_Test/GEVINO_TFT_Test.ino): full self-test with 7"/10" touch auto-detection.
-- [Multi_Touch](examples/Multi_Touch/Multi_Touch.ino): multi-touch input.
+- [Multi_Touch](examples/Multi_Touch/Multi_Touch.ino): multi-touch input, one coloured dot per finger, on either panel.
+- [GUIslice](examples/GUIslice/GUIslice.ino) / [ThemeDemo](examples/ThemeDemo/ThemeDemo.ino): touchscreen GUI with GUIslice (glass theme, three animated themes).
 - [DMA_Pics_from_flash](examples/DMA_Pics_from_flash/DMA_Pics_from_flash.ino): fast full-screen image loading via DMA.
 - [Demo](examples/Demo/Demo.ino): graphical HMI demo.
 - [ADC](examples/ADC/ADC.ino) / [DAC](examples/DAC/DAC.ino): non-blocking analog input / analog output.

@@ -8,13 +8,9 @@
 #include "All_76_Pic_65K.h" // Keep this include order
 #include "gevino_tft_display.h"
 
-// Touch
-#include <FT5206.h>
-#define CTP_INT          38    // touch data ready for read from FT5206 touch controller
-FT5206 cts = FT5206(CTP_INT);
-uint8_t registers[FT5206_REGISTERS];
-uint16_t coordinates[5][2];
-uint8_t current_touches = 0;
+// Touch: 7" (FT5206) and 10" (GT9271) are both handled by the library,
+// which auto-detects the panel fitted to the board.
+#include "gevino_tft_touch.h"
 
 String str;
 
@@ -28,8 +24,11 @@ void setup() {
 
   gevino_io_setup();
   tft.init();
-  tft.selectInternalFont(RA8876_FONT_SIZE_32);  
+  tft.selectInternalFont(RA8876_FONT_SIZE_32);
 
+  gevino_touch_setup();   // probes 0x38 / 0x5D: returns 7, 10 or 0
+  SerialUSB.print("Touch panel: ");
+  SerialUSB.println(gevino_touch_name());
 }
 
 void loop() {
@@ -63,15 +62,9 @@ void loop() {
 }
 
 void TestTouch ( void) {
-  cts.setTouchLimit(1);//from 1 to 5
-  if (cts.touched()) {
-    uint16_t x, y;
-    cts.getTSregisters(registers);
-    current_touches = cts.getTScoordinates(coordinates, registers);
-    if (current_touches < 1) return;
-
-    x = coordinates[0][0];
-    y = coordinates[0][1];
-    tft.fillCircle(1024 - x, 600 - y, 5, RGB565(0, 255, 0));
+  int16_t x, y;
+  // The library returns screen coordinates (0..1023, 0..599) for both panels.
+  if (gevino_touch_read(&x, &y)) {
+    tft.fillCircle(x, y, 5, RGB565(0, 255, 0));
   }
 }

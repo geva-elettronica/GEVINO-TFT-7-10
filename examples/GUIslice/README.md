@@ -45,7 +45,20 @@ A 1024×600 page with:
   separate font per size. The largest sizes sit in the right column; 112pt is taller
   than the panel and is clipped at the bottom.
 
-Touch is provided by the 7" **FT5206** capacitive controller.
+## Touch (7" and 10")
+
+The sketch runs unchanged on both models. `gevino_touch_setup()` (from the GEVINO TFT library)
+probes the I²C bus before `gslc_Init()` and remembers which panel is fitted; in `loop()`,
+`gevino_touch_gui_update(&m_gui)` feeds it to GUIslice:
+
+- **7" (FT5206, 0x38)** — GUIslice polls it itself through `DRV_TOUCH_ADA_FT5206`, so the bridge
+  call is a no-op.
+- **10" (GT9271, 0x5D)** — GUIslice has no driver for it, so the library reads the panel and injects
+  the points with `gslc_TrackTouch()`, synthesising the release event after 80 ms of silence (both
+  controllers keep re-asserting INT while the finger is down, so "INT high" does not mean "finger
+  lifted" — and without a release GUIslice buttons never fire, since they act on `GSLC_TOUCH_UP_IN`).
+
+None of that lives in the sketch: it is all in `gevino_tft_touch.h` / `gevino_tft_touch_gslc.h`.
 
 ## Requirements
 
@@ -59,7 +72,8 @@ Touch is provided by the 7" **FT5206** capacitive controller.
      It must also provide **`src/glass/All_76_Pic_65K.h`** (the glass image table), and the
      matching **`All_76_Pic_65K.bin`** (glass theme) must be programmed into the display
      flash at `Pic_Offset`.
-   - **FT5206** — sumotoy capacitive-touch library (`<FT5206.h>`).
+   - **FT5206** — sumotoy capacitive-touch library (`<FT5206.h>`), required by GUIslice's own 7"
+     touch driver. The GEVINO library does not need it: it drives both panels over `Wire`.
 3. **Config:** in [`GUIslice/src/GUIslice_config.h`](../../../src/GUIslice_config.h) make sure
    this line is enabled (it already is in this repo):
    ```cpp
@@ -74,12 +88,14 @@ Touch is provided by the 7" **FT5206** capacitive controller.
 |------------------|-----------------------------------------------|
 | GUI logic        | GUIslice (`gslc_*` API)                        |
 | Display driver   | `gevinoTFT_RA8876` via `DRV_DISP_ADAGFX_RA8876_GV` |
-| Touch            | sumotoy FT5206 via `DRV_TOUCH_ADA_FT5206`      |
+| Touch 7"         | sumotoy FT5206 via `DRV_TOUCH_ADA_FT5206`      |
+| Touch 10"        | `gevino_tft_touch.h` + `gevino_tft_touch_gslc.h` (GEVINO TFT library) |
+| Panel detection  | `gevino_touch_setup()` (GEVINO TFT library)    |
 | Board I/O        | `gevino_tft_io.h` (`gevino_io_setup()`, `updateIO()`, `In*/Out*`, `Timer`) |
 
 `gevino_io_setup()` performs the board bring-up (SPI + drive strength, raises the shared
-chip-selects, resets the FT5206) and must be called **before** `gslc_Init()`.
-`gslc_Init()` then runs `RA8876::init()` and `FT5206::begin()`.
+chip-selects, resets the touch panel) and must be called **before** `gslc_Init()`, followed by
+`gevino_touch_setup()`. `gslc_Init()` then runs `RA8876::init()` and `FT5206::begin()`.
 
 ## Notes / limitations (this first step)
 

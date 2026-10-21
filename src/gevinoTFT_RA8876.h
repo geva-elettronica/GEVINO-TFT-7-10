@@ -402,8 +402,16 @@ public:
   // display serial flash. Without an SD card (or those files) it does nothing, so
   // it is safe to run on every boot. (Needs the SdFat library.)
   void copySDtoFlash(void);
-  void writeFlash(unsigned long flash_addr, const char *file, byte erase); // erase: 0=none, 1=all, 2=pic area
+  // erase: 0 = none, anything else = erase each 64 KB block just before
+  // writing into it (only the blocks actually written, no chip erase)
+  void writeFlash(unsigned long flash_addr, const char *file, byte erase);
   unsigned char flashReadStatus(void);
+  void flashWriteEnable(void);
+  void flashEraseBlock(unsigned long addr);
+  bool flashPageProgram(unsigned long addr, const uint8_t *src, uint16_t n, bool burst);
+  // Shifts len bytes into the flash in 16-byte chip-select frames instead of
+  // one frame per byte. false = a controller FIFO did not move in time.
+  bool spiMasterBurst(const uint8_t *buf, uint16_t len);
 
   // Dimensions
   int getWidth() { return m_width; };

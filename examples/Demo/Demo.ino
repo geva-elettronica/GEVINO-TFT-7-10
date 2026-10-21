@@ -25,19 +25,15 @@ Adafruit_FRAM_I2C fram     = Adafruit_FRAM_I2C();
 
 unsigned char *p_FRAM_Byte;
 
-// Touch
+// Touch: the library drives both panels (7" FT5206 / 10" GT9271) and
+// auto-detects which one is fitted.
 struct struct_TouchPoint
 {
   int x;
-  int y;  
+  int y;
 };
-#include <FT5206.h>
-#define CTP_INT          38    // touch data ready for read from FT5206 touch controller
-FT5206 cts = FT5206(CTP_INT);
+#include "gevino_tft_touch.h"
 
-uint8_t registers[FT5206_REGISTERS];
-uint16_t coordinates[5][2];
-uint8_t current_touches = 0;
 int Number;
 
 struct Clocks_struct
@@ -388,29 +384,19 @@ void setup()
   CopySDonFlash();                // if exist All_76_Pic_65K.bin or font.bin copy on flash
 
   
-  // Test Touch
-  Wire.begin();
-  Wire.setClock(15000000UL);
-  Wire.beginTransmission(0x38);
-  Wire.write(0);
-  Wire.write(0);
-  Wire.endTransmission(0x38);
-  Wire.requestFrom(0x38, 1);
-
-  if (Wire.available()) 
+  // Test Touch: probe both controllers and initialise the one that answers
+  if (gevino_touch_setup())
   {
-    SerialUSB.println("Touch OK");
-    tft.println("Touch OK");
+    SerialUSB.print("Touch OK - ");   SerialUSB.println(gevino_touch_name());
+    tft.print("Touch OK - ");         tft.println(gevino_touch_name());
     delay(200);
-  } 
-  else 
+  }
+  else
   {
     SerialUSB.println("Touch FAIL");
     tft.println("Touch FAIL");
     while(1);
   }
-  
-  cts.begin();
 
   // Test FRAM
   if (fram.begin()) 
@@ -620,21 +606,16 @@ void Update_TimeCounter()
  * @param[in] None
  * @return    boolean (true = touch pressed, false = touch unpressed) 
  *********************************************************************/
-bool Touch_Event(struct struct_TouchPoint &p) 
+bool Touch_Event(struct struct_TouchPoint &p)
 {
-  cts.setTouchLimit(1);//from 1 to 5
-  
-  if (cts.touched()) 
-  {
-    uint16_t x, y;
-    cts.getTSregisters(registers);
-    current_touches = cts.getTScoordinates(coordinates, registers);
-  
-    if (current_touches < 1) 
-      return false;
+  int16_t x, y;
 
-    p.x = 1024 - coordinates[0][0];
-    p.y = 600 - coordinates[0][1];
+  // The library already returns screen coordinates (0..1023, 0..599),
+  // whatever panel is fitted.
+  if (gevino_touch_read(&x, &y))
+  {
+    p.x = x;
+    p.y = y;
     return true;
   }
   else

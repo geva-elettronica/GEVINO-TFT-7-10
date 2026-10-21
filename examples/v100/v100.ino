@@ -34,16 +34,8 @@ IPAddress ip(192, 168, 1, 254);
 #include <Ch376msc.h>
 Ch376msc flashDrive(CH376_CS, CH376_INT); // chipSelect
 
-// Touch
-#include <FT5206.h>
-#define CTP_INT          38    // touch data ready for read from FT5206 touch controller
-FT5206 cts = FT5206(CTP_INT);
-uint8_t registers[FT5206_REGISTERS];
-uint16_t coordinates[5][2];
-uint8_t current_touches = 0;
-
-// Touch 10"  GT9271
-#include "10inc_Touch.h"
+// Touch: one header for both panels (7" FT5206 / 10" GT9271), auto-detected
+#include "gevino_tft_touch.h"
 
 
 // Install https://github.com/sandeepmistry/arduino-CAN from Arduino Library Manager
@@ -131,41 +123,14 @@ void setup() {
     tft.println("RTC fail");
   }
 
-  // Test Touch  7"
-  Wire.begin();
-  Wire.setClock(15000000UL);
-  Wire.beginTransmission(0x38);
-  Wire.write(0);
-  Wire.write(0);
-  Wire.endTransmission(0x38);
-  Wire.requestFrom(0x38, 1);
-
-  if ( Wire.available() ) {
-    SerialUSB.println("Touch 7\" OK");
-    tft.print("Touch ok  -  ");
+  // Test Touch: one probe covers both the 7" and the 10" panel
+  if ( gevino_touch_setup() ) {
+    SerialUSB.print("Touch ");   SerialUSB.print(gevino_touch_name());   SerialUSB.println(" OK");
+    tft.print("Touch ");         tft.print(gevino_touch_name());         tft.print(" ok  -  ");
   } else {
-    SerialUSB.println("Touch 7\" FAIL");
+    SerialUSB.println("Touch FAIL");
     tft.print("Touch fail  -  ");
   }
-  // Test Touch  10"
-  Wire.begin();
-  Wire.setClock(15000000UL);
-  Wire.beginTransmission(0x5d);
-  Wire.write(0);
-  Wire.write(0);
-  Wire.endTransmission(0x5d);
-  Wire.requestFrom(0x5d, 1);
-
-  if ( Wire.available() ) {
-    SerialUSB.println("Touch 10\" OK");
-    tft.print("Touch ok  -  ");
-  } else {
-    SerialUSB.println("Touch 10\" FAIL");
-    tft.print("Touch fail  -  ");
-  }
-  
-  
-  cts.begin();
 
   // Test Fram
   byte i32 = fram32.begin(0x50);
@@ -585,15 +550,9 @@ void Level (void) {
 }
 
 void TestTouch ( void) {
-  cts.setTouchLimit(1);//from 1 to 5
-  if (cts.touched()) {
-    uint16_t x, y;
-    cts.getTSregisters(registers);
-    current_touches = cts.getTScoordinates(coordinates, registers);
-    if (current_touches < 1) return;
-
-    x = coordinates[0][0];
-    y = coordinates[0][1];
-    tft.fillCircle(1024 - x, 600 - y, 5, RGB565(0, 255, 0));
+  int16_t x, y;
+  // Screen coordinates, already flipped by the library for either panel.
+  if (gevino_touch_read(&x, &y)) {
+    tft.fillCircle(x, y, 5, RGB565(0, 255, 0));
   }
 }

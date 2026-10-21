@@ -9,7 +9,8 @@ front USB-stick reader.
 
 The **7" and 10" models are the same board** — only the **glass changes** (the TFT panel and its
 capacitive-touch controller): the 7" panel uses an **FT5206** touch controller, the 10" panel a
-**GT9271**. The firmware auto-detects which panel is fitted (see the test example).
+**GT9271**. Both are driven by the library, which **auto-detects** which panel is fitted, so the
+same sketch runs on either model (see [Touch](#touch)).
 
 Designed and manufactured by **[GEVA Elettronica](https://www.gevaelettronica.it)** (Italy).
 
@@ -51,7 +52,7 @@ in italiano:  https://youtu.be/gX--vZ-2GV4
 | Sizes | **7"** and **10"** (same board, different glass) |
 | Resolution | 1024 × 600, capacitive multi-touch |
 | Controller | Raio **RA8876** (SPI) |
-| Touch controller | 7": **FT5206** (I²C 0x38) — 10": **GT9271** (I²C 0x5D) |
+| Touch controller | 7": **FT5206** (I²C 0x38) — 10": **GT9271** (I²C 0x5D), both handled by the library and auto-detected |
 | Viewing angle | L/R 70°, top 60°, bottom 70° |
 | Brightness | 400 cd/m² |
 | DMA | full-screen 1024×600 image load in ~80 ms |
@@ -155,9 +156,10 @@ analog inputs. The analog output uses the SAMD21 DAC (`analogWrite`).
 
 | Path | Description |
 |------|-------------|
-| [`src/`](src/) | Board I/O header (`gevino_tft_io.h`), the RA8876 display driver (`gevinoTFT_RA8876.*`), the display helper (`gevino_tft_display.h`) and the font tables. |
+| [`src/`](src/) | Board I/O header (`gevino_tft_io.h`), the RA8876 display driver (`gevinoTFT_RA8876.*`), the display helper (`gevino_tft_display.h`), the 7"/10" touch driver (`gevino_tft_touch.*`, plus the GUIslice bridge `gevino_tft_touch_gslc.h`) and the font tables. It also holds the image tables and binaries for the display flash: `All_76_Pic_65K.*` (glass + fluo + alu, 1888 images) and `glass/All_76_Pic_65K.*` (the original glass theme alone). |
 | [`examples/`](examples/) | Ready-to-flash Arduino sketches (display, touch, DMA images, analog/DAC, USB stick, Modbus, full test). |
 | [`docs/`](docs/) | Hardware manual, CE declaration, RA8876 datasheets/API, panel-cut drawings and the font binary. |
+| [`theme_pics/`](theme_pics/) | Preview and catalogue images of the FLUO and ALU themes. |
 | [`AGENTS.md`](AGENTS.md) | Programming guide for LLMs / AI coding agents. |
 | [`llms.txt`](llms.txt) | LLM-friendly map of the repository (llmstxt.org convention). |
 | [`keywords.txt`](keywords.txt) | Arduino IDE syntax highlighting. |
@@ -169,6 +171,8 @@ analog inputs. The analog output uses the SAMD21 DAC (`analogWrite`).
 
 - **Arduino IDE** (or arduino-cli) and the **Arduino SAMD core**; board **Arduino Zero (Native USB Port)**.
 - The board I/O, ADC helpers and Timer are bundled in `gevino_tft_io.h` (no external dependency).
+- Touch is bundled too (`gevino_tft_touch.h`): both the 7" FT5206 and the 10" GT9271 are driven
+  over `Wire`, so **no external touch library is needed**.
 - Examples use additional libraries depending on what they exercise (e.g. **SdFat**, **Ethernet**,
   **DS3231** RTC, **FRAM_I2C**, ESP Wi-Fi). Each sketch documents what it needs.
 
@@ -228,6 +232,41 @@ The RA8876 controller is driven by the `tft` object (class `RA8876` in `gevinoTF
 `tft.init()`, `tft.clearScreen()`, `tft.setTextColor()`, `tft.print()/println()`, DMA image
 functions, etc. See the examples.
 
+### Touch
+
+`gevino_tft_touch.h` drives **both** capacitive controllers (7" FT5206 @ 0x38, 10" GT9271 @ 0x5D)
+over `Wire` and auto-detects which one is fitted, so the same sketch runs on either model.
+Coordinates come back already in **screen space** (0…1023 / 0…599 — the library flips the axes,
+both panels being mounted rotated 180°, and clamps the result).
+
+```cpp
+#include "gevino_tft_touch.h"
+
+void setup() {
+  gevino_io_setup();
+  tft.init();
+  gevino_touch_setup();                     // probe: returns 7, 10 or 0
+  SerialUSB.println(gevino_touch_name());   // "7\"" / "10\"" / "none"
+}
+
+void loop() {
+  int16_t x, y;
+  if (gevino_touch_read(&x, &y)) tft.fillCircle(x, y, 5, RGB565(0, 255, 0));
+}
+```
+
+| Function | Description |
+|----------|-------------|
+| `gevino_touch_setup()` | Probes both addresses, configures the INT line (`TouchInt`, D38) and returns `GEVINO_TOUCH_7` (7), `GEVINO_TOUCH_10` (10) or `GEVINO_TOUCH_NONE` (0). Call it in `setup()`, after `gevino_io_setup()`. |
+| `gevino_touch_read(&x, &y)` | Non-blocking; `true` + the first contact point when a new touch frame is pending. |
+| `gevino_touch_points(pts, nMax)` | Multi-touch: fills `GevinoTouchPoint[]` (`x`, `y`, `id`), returns the count (up to 5 on the 7", 10 on the 10"). |
+| `gevino_touch_down()` | `true` while a finger is on the glass (INT line only, no I²C traffic). |
+| `gevino_touch_panel()`, `gevino_touch_is7()`, `gevino_touch_is10()`, `gevino_touch_found()`, `gevino_touch_name()` | Which panel was detected. |
+
+For a GUIslice GUI, also include `gevino_tft_touch_gslc.h` (after `GUIslice.h`) and call
+`gevino_touch_gui_update(&m_gui)` at the top of `loop()` — see
+[`examples/GUIslice`](examples/GUIslice/) and [AGENTS.md](AGENTS.md).
+
 ### Timer
 A lightweight non-blocking software timer class (`Timer`) based on `millis()` is included.
 
@@ -236,7 +275,8 @@ A lightweight non-blocking software timer class (`Timer`) based on `millis()` is
 | Example | What it shows |
 |---------|---------------|
 | [`GEVINO_TFT_Test`](examples/GEVINO_TFT_Test/GEVINO_TFT_Test.ino) | Full self-test with **7"/10" touch auto-detection**, plus USB flash, CAN, Ethernet, RTC, FRAM, analog I/O, ESP, SIM800L and shift-register I/O. |
-| [`Multi_Touch`](examples/Multi_Touch/Multi_Touch.ino) | Multi-touch input. |
+| [`Multi_Touch`](examples/Multi_Touch/Multi_Touch.ino) | Multi-touch input — one coloured dot per finger, on both the 7" and the 10" panel. |
+| [`GUIslice`](examples/GUIslice/) / [`ThemeDemo`](examples/ThemeDemo/) | Touchscreen GUI built with GUIslice (glass theme / three animated themes). |
 | [`DMA_Pics_from_flash`](examples/DMA_Pics_from_flash/DMA_Pics_from_flash.ino) | Fast full-screen image loading via DMA from the display flash. |
 | [`Demo`](examples/Demo/Demo.ino) | Graphical HMI demo. |
 | [`ADC`](examples/ADC/ADC.ino) / [`DAC`](examples/DAC/DAC.ino) | Non-blocking analog input / analog output. |

@@ -9,7 +9,9 @@
 //   Hardware:
 //     - GEVINO TFT, Arduino Zero compatible (SAMD21)
 //     - 1024x600 TFT, Raio RA8876 controller (SPI, TFT_CS = 42)
-//     - 7" capacitive touch: FT5206 (I2C 0x38, INT on D38)
+//     - capacitive touch: FT5206 on the 7", GT9271 on the 10" (INT on D38).
+//       The library detects which one is fitted (gevino_tft_touch.h) and the
+//       GUIslice bridge feeds it to the GUI, so this sketch runs on both.
 //
 //   Expected behaviour:
 //     - The screen shows a title, a live counter, the In0 input state and
@@ -21,8 +23,10 @@
 // PREREQUISITES (Arduino IDE / arduino-cli):
 //   1. Board:    "Arduino Zero (Native USB Port)" (Arduino SAMD core).
 //   2. Libraries installed alongside GUIslice:
-//        - GEVINO TFT library  (provides gevino_tft_io.h + gevinoTFT_RA8876)
-//        - FT5206              (sumotoy/FT5206 capacitive touch)
+//        - GEVINO TFT library  (provides gevino_tft_io.h, gevino_tft_touch.h
+//                               and gevinoTFT_RA8876)
+//        - FT5206              (sumotoy/FT5206, used by GUIslice's own 7"
+//                               touch driver - see the config below)
 //   3. Config:   in GUIslice/src/GUIslice_config.h enable the line
 //        #include "../configs/ard-shld-gevino_tft.h"
 //      (this selects DRV_DISP_ADAGFX_RA8876_GV + DRV_TOUCH_ADA_FT5206).
@@ -50,6 +54,12 @@
 
 // Extended elements
 #include "elem/XSlider.h"
+
+// GEVINO capacitive touch (7" FT5206 / 10" GT9271, auto-detected) and its
+// GUIslice bridge. The bridge header needs the gslc_ types, so it comes after
+// GUIslice.h.
+#include "gevino_tft_touch.h"
+#include "gevino_tft_touch_gslc.h"
 
 // GEVA external fonts stored in the display serial flash (descriptors only; the
 // glyphs are copied into canvas RAM by RA8876::init()). fontExt.h declares them,
@@ -520,6 +530,11 @@ void setup()
 
   gslc_InitDebug(&DebugOut);
 
+  // Which touch panel is fitted? Probe before gslc_Init(), which starts
+  // GUIslice's FT5206 driver regardless of what is on the bus.
+  gevino_touch_setup();
+  SerialUSB.print("Touch panel: "); SerialUSB.println(gevino_touch_name());
+
   // Initialize GUIslice (this also runs RA8876::init() and FT5206::begin())
   if (!gslc_Init(&m_gui, &m_drv, m_asPage, MAX_PAGE, m_asFont, MAX_FONT)) { return; }
 
@@ -730,6 +745,11 @@ void InitPageFonts(void)
 // -----------------------------------------------------------------------------
 void loop()
 {
+  // Feed the touch panel to GUIslice. On a 7" board this is a no-op (GUIslice
+  // polls the FT5206 itself); on a 10" board the library reads the GT9271 and
+  // injects the points, because GUIslice has no driver for it.
+  gevino_touch_gui_update(&m_gui);
+
   // Service the GUI (drawing + touch)
   gslc_Update(&m_gui);
 

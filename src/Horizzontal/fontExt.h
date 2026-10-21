@@ -71,5 +71,7 @@ extern const FONT_INFO notoSerifBold_64pt;
 extern const FONT_INFO notoSerifBold_80pt;
 extern const FONT_INFO notoSerifBold_96pt;
 extern const FONT_INFO notoSerifBold_112pt;
-#define ENDFLASH  3807932
+extern const FONT_INFO symbols_32pt;
+extern const FONT_INFO symbols_48pt;
+#define ENDFLASH  3837052
 #endif

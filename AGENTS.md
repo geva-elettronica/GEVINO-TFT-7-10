@@ -15,8 +15,9 @@ modules. Program it with the Arduino IDE / Arduino SAMD core (board **Arduino Ze
 Port**); it also works with Cursor and OpenPLC.
 
 **7" vs 10":** the two models are the **same board** — only the glass changes. The touch controller
-differs: **7" = FT5206** (I²C 0x38), **10" = GT9271** (I²C 0x5D). Probe both I²C addresses at startup
-to auto-detect which panel is fitted (see `GEVINO_TFT_Test`).
+differs: **7" = FT5206** (I²C 0x38), **10" = GT9271** (I²C 0x5D). The library handles both and
+auto-detects which one is fitted: call `gevino_touch_setup()` once and use the same touch code on
+either model (see [Touch](#touch-7-ft5206--10-gt9271)).
 
 The complete pin map is in [README.md](README.md) and in [`src/gevino_tft_io.h`](src/gevino_tft_io.h).
 
@@ -29,6 +30,7 @@ The complete pin map is in [README.md](README.md) and in [`src/gevino_tft_io.h`]
    #include "gevino_tft_io.h"    // board I/O, ADC, Timer
    #include "All_76_Pic_65K.h"   // image data (uses the `code`/PROGMEM macro)
    #include "gevino_tft_display.h"
+   #include "gevino_tft_touch.h" // touch, if the sketch uses it (7"/10", auto-detected)
    ```
 3. **Include `gevino_tft_io.h` in exactly ONE translation unit** (your main `.ino`): it instantiates
    the `Serial2`/`Serial3` SERCOM UARTs, their ISRs and the global I/O registers (`OutReg`/`InReg`).
@@ -87,12 +89,43 @@ from SD into the display flash (`CopySDonFlash()` in `gevino_tft_display.h`, fil
 
 ## Touch (7" FT5206 / 10" GT9271)
 
-Both controllers are on I²C (`Wire`). Detect the panel by probing both addresses:
-- 7": FT5206 at `0x38`.
-- 10": GT9271 at `0x5D` (INT on D38 / `TouchInt`).
+**Do not write touch code by hand: the library does it.** `gevino_tft_touch.h` drives both
+controllers over `Wire` (no external touch library needed), probes both I²C addresses at startup —
+7": FT5206 at `0x38`, 10": GT9271 at `0x5D`, INT on D38 / `TouchInt` — and exposes one API that
+works with whichever panel is fitted. Coordinates come back **already in screen space**
+(0…1023 / 0…599: both panels are mounted rotated 180°, so the library flips and clamps the axes).
 
-Auto-detect at startup and use the matching driver for the rest of the program (see
-`GEVINO_TFT_Test` and `Multi_Touch`).
+```cpp
+#include "gevino_tft_io.h"
+#include "All_76_Pic_65K.h"
+#include "gevino_tft_display.h"
+#include "gevino_tft_touch.h"
+
+void setup() {
+  gevino_io_setup();       // board bring-up (also pulses the touch reset)
+  tft.init();
+  gevino_touch_setup();    // probe: returns 7, 10 or 0 (call AFTER gevino_io_setup)
+  SerialUSB.println(gevino_touch_name());     // "7\"" / "10\"" / "none"
+}
+
+void loop() {
+  int16_t x, y;
+  if (gevino_touch_read(&x, &y)) tft.fillCircle(x, y, 5, RGB565(0, 255, 0));
+}
+```
+
+| Function | Description |
+|----------|-------------|
+| `gevino_touch_setup()` | Probes `0x38` / `0x5D`, configures the INT line, returns `GEVINO_TOUCH_7`, `GEVINO_TOUCH_10` or `GEVINO_TOUCH_NONE` (7 / 10 / 0). |
+| `gevino_touch_read(&x, &y)` | `true` + first contact point in screen coordinates when a new frame is pending. Non-blocking. |
+| `gevino_touch_points(pts, nMax)` | Multi-touch: fills an array of `GevinoTouchPoint` (`x`, `y`, `id`), returns how many. Up to 5 on the 7", 10 on the 10" (`GEVINO_TOUCH_MAX_POINTS`). |
+| `gevino_touch_down()` | `true` while a finger is on the glass (reads the INT line only, no I²C traffic). |
+| `gevino_touch_panel()` / `gevino_touch_is7()` / `gevino_touch_is10()` / `gevino_touch_found()` | Which panel was detected. |
+| `gevino_touch_name()` | `"7\""`, `"10\""` or `"none"` — ready to print. |
+| `gevino_touch_pin_setup()` | Re-applies the INT pin configuration, for when another library reconfigures D38. |
+
+The same sketch therefore runs unchanged on a 7" and a 10" board (see `GEVINO_TFT_Test`,
+`Multi_Touch`, `GEVINO_TFT_1.0_Simple`). For a GUIslice GUI see the section below.
 
 ## Front USB memory stick (CH376)
 
@@ -219,7 +252,8 @@ following this section verbatim. A complete worked example lives in
 
 ### One-time setup
 - **Libraries:** **GUIslice** (this GEVA fork — it must contain the `DRV_DISP_ADAGFX_RA8876_GV`
-  driver and export `RA8876* gslc_GevinoDisp(void)`) and **FT5206** (sumotoy). The GEVINO TFT
+  driver and export `RA8876* gslc_GevinoDisp(void)`) and **FT5206** (sumotoy — required by
+  GUIslice's own 7" touch driver, not by the GEVINO library). The GEVINO TFT
   library must contain, in `src/`: the orientation `font.h` + `fontExt.h` (copy from
   `src/Horizzontal/` for the 1024×600 landscape set) and `src/glass/All_76_Pic_65K.h`.
 - **Config:** in `GUIslice/src/GUIslice_config.h` enable
@@ -241,6 +275,8 @@ following this section verbatim. A complete worked example lives in
    #include "elem/XSlider.h"           // only if you use sliders
    #include "fontExt.h"                // GEVA font types + extern declarations
    #include "Horizzontal/font.h"       // GEVA font definitions (orientation-specific)
+   #include "gevino_tft_touch.h"       // 7"/10" touch (auto-detected)
+   #include "gevino_tft_touch_gslc.h"  // GUIslice bridge (needs the gslc_ types: keep it last)
    extern "C" RA8876* gslc_GevinoDisp(void);   // driver accessor: the live display instance
    ```
    If a project uses **no** flash images, drop the images include and instead `#undef pic_def`
@@ -248,8 +284,19 @@ following this section verbatim. A complete worked example lives in
 2. **Call `gevino_io_setup()` in `setup()` BEFORE `gslc_Init()`** (it brings up SPI, raises the
    shared chip-selects SD/ETH/CH376 and resets the FT5206). `gslc_Init()` then runs
    `RA8876::init()` (which also copies the fonts to canvas RAM) and `FT5206::begin()`.
-3. **Route GUIslice debug to `SerialUSB`** via `gslc_InitDebug()` — `Serial` is the Wi-Fi/BT port.
-4. The panel is native **1024×600 landscape**, no rotation; color is standard **RGB565**.
+3. **Touch:** call `gevino_touch_setup()` right before `gslc_Init()`, and
+   `gevino_touch_gui_update(&m_gui)` at the top of `loop()`, before `gslc_Update()`:
+   ```cpp
+   void setup() { gevino_io_setup(); gevino_touch_setup(); gslc_Init(...); ... }
+   void loop()  { gevino_touch_gui_update(&m_gui); gslc_Update(&m_gui); ... }
+   ```
+   On a **7"** board that call is a no-op — GUIslice polls the FT5206 itself through
+   `DRV_TOUCH_ADA_FT5206`. On a **10"** board GUIslice has no GT9271 driver, so the bridge reads
+   the panel and injects the points with `gslc_TrackTouch()`, synthesising the release event
+   after `GEVINO_TOUCH_RELEASE_MS` (80 ms) of silence — without it buttons never fire, since
+   GUIslice acts on `GSLC_TOUCH_UP_IN`. The same sketch runs on both panels.
+4. **Route GUIslice debug to `SerialUSB`** via `gslc_InitDebug()` — `Serial` is the Wi-Fi/BT port.
+5. The panel is native **1024×600 landscape**, no rotation; color is standard **RGB565**.
 
 ### Fonts
 `gslc_FontSet(&gui, fontId, GSLC_FONTREF_PTR, &notoSans_32pt, 1)` selects a GEVA flash font.

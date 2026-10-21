@@ -593,10 +593,124 @@ unsigned char RA8876::flashReadStatus(void) {   // Serial flash Read Status Regi
   unsigned char temp;
   nSS_Active();
   SPI_Master_FIFO_Data_Put(0x05);
-  delay(1);
+  // No delay here: SPI_Master_FIFO_Data_Put() already waits for the byte to be
+  // shifted out and reads the incoming one back. A delay(1) in this function
+  // costs a full millisecond on every busy poll, i.e. minutes over a whole
+  // flash image.
   temp = SPI_Master_FIFO_Data_Put(0xff);        // dummy cycle, read back value
   nSS_Inactive();
   return temp;
+}
+
+// =============================================================================
+// Bulk transfer to the serial flash through the RA8876 SPI master.
+//
+// SPI_Master_FIFO_Data_Put() spends 8 separate SPI transactions with the
+// controller on every single byte: the byte itself, two FIFO polls, and the
+// read back of the incoming byte, which a page program does not need. That is
+// ~30us and 16 chip-select frames per useful byte, about 33 KB/s, while the
+// flash side is clocked at 30 MHz and would take 3.7 MB/s.
+//
+// Here the data port REG[B8h] is selected once and the bytes are shifted in a
+// single chip-select frame, which the RAiO SPI protocol allows: leading byte
+// 0x80, then as many data bytes as wanted. The master FIFO is 16 bytes deep,
+// so one frame carries at most 16 bytes; before the next frame the TX FIFO
+// must have drained and the RX FIFO must be emptied, or the master stops.
+//
+// Returns false if a FIFO does not move within the timeout, so the caller can
+// fall back to the byte-by-byte path instead of hanging.
+// =============================================================================
+// The handshake every 16 bytes is what keeps this safe, and it costs about
+// half the time. The flash side is clocked at 30 MHz and the host at 12, so
+// in practice the FIFO never fills and a whole page could go in one frame:
+// raising RA8876_SPIM_FIFO to 256 roughly doubles the speed again. Only do
+// that with a verified image in hand - if the assumption is ever wrong the
+// bytes are lost silently, with no timeout to catch it.
+#define RA8876_SPIM_FIFO  16        // SPI master FIFO depth, in bytes
+#define RA8876_SPIM_WAIT  5000      // us to wait for a FIFO before giving up
+
+bool RA8876::spiMasterBurst(const uint8_t *buf, uint16_t len)
+{
+  uint32_t t0;
+
+  while (len) {
+    uint16_t n = (len > RA8876_SPIM_FIFO) ? RA8876_SPIM_FIFO : len;
+
+    t0 = micros();                            // room for the whole chunk
+    while (!Tx_FIFO_Empty_Flag())
+      if (micros() - t0 > RA8876_SPIM_WAIT) return false;
+
+    writeCmd(0xB8);                           // FIFO data port
+    digitalWrite(m_csPin, LOW);
+    SPI.transfer(RA8876_DATA_WRITE);
+    for (uint16_t i = 0; i < n; i++) SPI.transfer(buf[i]);
+    digitalWrite(m_csPin, HIGH);
+
+    t0 = micros();                            // last byte out of the shifter
+    while (!Tx_FIFO_Empty_Flag())
+      if (micros() - t0 > RA8876_SPIM_WAIT) return false;
+
+    writeCmd(0xB8);                           // drop what came back
+    digitalWrite(m_csPin, LOW);
+    SPI.transfer(RA8876_DATA_READ);
+    for (uint16_t i = 0; i < n; i++) SPI.transfer(0);
+    digitalWrite(m_csPin, HIGH);
+
+    t0 = micros();                            // in case it pops one at a time
+    while (!Rx_FIFO_Empty_Flag()) {
+      SPI_Master_FIFO_Data_Get();
+      if (micros() - t0 > RA8876_SPIM_WAIT) return false;
+    }
+
+    buf += n;
+    len -= n;
+  }
+  return true;
+}
+
+void RA8876::flashWriteEnable(void) {           // WREN (06h), until WEL is set
+  do {
+    nSS_Active();
+    SPI_Master_FIFO_Data_Put(0x06);
+    nSS_Inactive();
+  } while (!(flashReadStatus() & 0x02));
+}
+
+void RA8876::flashEraseBlock(unsigned long addr) {   // 64 KB block erase (D8h)
+  flashWriteEnable();
+  nSS_Active();
+  SPI_Master_FIFO_Data_Put(0xD8);
+#ifdef Flash_256Mb
+  SPI_Master_FIFO_Data_Put(addr >> 24);
+#endif
+  SPI_Master_FIFO_Data_Put(addr >> 16);
+  SPI_Master_FIFO_Data_Put(addr >> 8);
+  SPI_Master_FIFO_Data_Put(addr);
+  nSS_Inactive();
+  while (flashReadStatus() & 0x01);
+}
+
+// One page (up to 256 bytes, never across a page boundary). false means the
+// burst gave up half way: the page holds whatever arrived before that, and the
+// caller is expected to program it again byte by byte. Writing the same page
+// twice is harmless, programming only clears bits that are already clear.
+bool RA8876::flashPageProgram(unsigned long addr, const uint8_t *src,
+                              uint16_t n, bool burst) {
+  bool ok = true;
+  flashWriteEnable();
+  nSS_Active();
+  SPI_Master_FIFO_Data_Put(0x02);               // page program
+#ifdef Flash_256Mb
+  SPI_Master_FIFO_Data_Put(addr >> 24);
+#endif
+  SPI_Master_FIFO_Data_Put(addr >> 16);
+  SPI_Master_FIFO_Data_Put(addr >> 8);
+  SPI_Master_FIFO_Data_Put(addr);
+  if (burst) ok = spiMasterBurst(src, n);
+  else for (uint16_t i = 0; i < n; i++) SPI_Master_FIFO_Data_Put(src[i]);
+  nSS_Inactive();
+  while (flashReadStatus() & 0x01);
+  return ok;
 }
 
 void RA8876::copySDtoFlash(void) {
@@ -604,21 +718,33 @@ void RA8876::copySDtoFlash(void) {
   if (!sd.begin(12, SD_SCK_MHZ(12))) return;     // no card / not ready -> nothing to do
   selectInternalFont(RA8876_FONT_SIZE_16);       // valid text mode for the writeFlash() progress prints
   bool wroteFont = false;
+  // Each call erases only the blocks it writes, so the two areas do not
+  // disturb each other and neither one pays for a chip erase.
   if (sd.exists("font.bin")) {
-    writeFlash(0, "font.bin", 1);                // erase whole chip + write fonts
+    writeFlash(0, "font.bin", 1);
     wroteFont = true;
   }
   if (sd.exists("All_76_Pic_65K.bin")) {
-    writeFlash(Pic_Offset, "All_76_Pic_65K.bin", wroteFont ? 0 : 2);
+    writeFlash(Pic_Offset, "All_76_Pic_65K.bin", 1);
   }
   if (wroteFont) FontCanvasLoad();               // reload fonts to canvas RAM (NOT a full re-init)
 }
 
+// erase: 0 = write on what is already there, anything else = erase each 64 KB
+// block just before writing into it. Only the blocks actually written are
+// erased, so what lies beyond the end of the file is left alone (nothing
+// points at it) and no time is spent erasing it. A chip erase on a W25Q128 is
+// 40 s typical and up to 200; the ~60 blocks of a font image are 9.
+//
+// If flash_addr is not on a 64 KB boundary the block that contains it is
+// erased all the same, so whatever shares that block is lost. Both callers
+// are aligned: fonts start at 0, images at Pic_Offset.
 void RA8876::writeFlash(unsigned long flash_addr, const char *file, byte erase) {
-  unsigned long TimeToWrite = millis(), BlockAddress = flash_addr;
+  unsigned long TimeToWrite = millis();
+  unsigned long nextBlock = flash_addr & ~0xFFFFUL;  // first block to erase
   int wDiv = 0;
-  unsigned short i;
-  uint8_t buffer[260];
+  bool burst = true;                 // until the controller FIFO says otherwise
+  uint8_t buffer[512];               // a whole SD sector per read
   SdFile ff;
   if (!ff.open(file, FILE_READ)) return;
   Enable_SFlash_SPI();
@@ -636,62 +762,31 @@ void RA8876::writeFlash(unsigned long flash_addr, const char *file, byte erase) 
 #endif
   print("  Flash Write ");
 
-  if (erase == 1) {                              // erase whole chip
-    do { nSS_Active(); SPI_Master_FIFO_Data_Put(0x06); delay(1); nSS_Inactive(); delay(1); }
-    while (!(flashReadStatus() & 0x02));
-    nSS_Active(); SPI_Master_FIFO_Data_Put(0x60); delay(1); nSS_Inactive();
-    while (flashReadStatus() & 0x01);
-    nSS_Active(); SPI_Master_FIFO_Data_Put(0x04); delay(1); nSS_Inactive();
-    while (flashReadStatus() & 0x01);
-    delay(10);
-    print("Eall");
+  // SD -> SAMD -> RA8876 -> flash, erasing each block on the way in
+  for (;;) {
+    int got = ff.read(buffer, sizeof(buffer));
+    if (got <= 0) break;
+
+    for (int off = 0; off < got; off += 256) {
+      uint16_t n = (got - off > 256) ? 256 : (uint16_t)(got - off);
+
+      if (erase && flash_addr >= nextBlock) {    // the block we are entering
+        flashEraseBlock(nextBlock);
+        nextBlock += 0x10000;
+        print("E");
+      }
+
+      if (!flashPageProgram(flash_addr, buffer + off, n, burst)) {
+        burst = false;                           // FIFO stuck: slow path, and
+        flashPageProgram(flash_addr, buffer + off, n, false);   // same page
+        print("!");
+      }
+      flash_addr += n;
+      if (++wDiv >= 400) { print("w"); wDiv = 0; }
+    }
   }
 
-  if (erase == 2) {                              // erase from BlockAddress to end
-    do {
-      do { nSS_Active(); SPI_Master_FIFO_Data_Put(0x06); delayMicroseconds(50); nSS_Inactive(); delayMicroseconds(50); }
-      while (!(flashReadStatus() & 0x02));
-      nSS_Active();
-      SPI_Master_FIFO_Data_Put(0xD8);
-#ifdef Flash_256Mb
-      SPI_Master_FIFO_Data_Put(BlockAddress >> 24);
-#endif
-      SPI_Master_FIFO_Data_Put(BlockAddress >> 16);
-      SPI_Master_FIFO_Data_Put(BlockAddress >> 8);
-      SPI_Master_FIFO_Data_Put(BlockAddress);
-      delayMicroseconds(50);
-      nSS_Inactive();
-      while (flashReadStatus() & 0x01);
-      BlockAddress += 0x10000;
-    } while (BlockAddress < 0xFFFFFF);
-    nSS_Active(); SPI_Master_FIFO_Data_Put(0x04); delay(1); nSS_Inactive();
-    while (flashReadStatus() & 0x01);
-    delay(10);
-    print("Epic");
-  }
-
-  do {                                           // SD -> SAMD -> RA8876 -> flash
-    ff.read(buffer, 256);
-    do { nSS_Active(); SPI_Master_FIFO_Data_Put(0x06); delayMicroseconds(50); nSS_Inactive(); }
-    while (!(flashReadStatus() & 0x02));
-    delayMicroseconds(50);
-    nSS_Active();
-    SPI_Master_FIFO_Data_Put(0x02);              // page program
-#ifdef Flash_256Mb
-    SPI_Master_FIFO_Data_Put(flash_addr >> 24);
-#endif
-    SPI_Master_FIFO_Data_Put(flash_addr >> 16);
-    SPI_Master_FIFO_Data_Put(flash_addr >> 8);
-    SPI_Master_FIFO_Data_Put(flash_addr);
-    for (i = 0; i < 256; i++) { delayMicroseconds(1); SPI_Master_FIFO_Data_Put(buffer[i]); }
-    nSS_Inactive();
-    while (flashReadStatus() & 0x01);
-    flash_addr += 0x0100;
-    delayMicroseconds(50);
-    if (++wDiv >= 400) { print("w"); wDiv = 0; }
-  } while (ff.available());
-
-  nSS_Active(); SPI_Master_FIFO_Data_Put(0x04); delay(1); nSS_Inactive();   // write disable
+  nSS_Active(); SPI_Master_FIFO_Data_Put(0x04); nSS_Inactive();   // write disable
   while (flashReadStatus() & 0x01);
   flashReadStatus();
   Check_2D_Busy();

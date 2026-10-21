@@ -9,6 +9,7 @@
 Timer	KEYWORD1
 RA8876	KEYWORD1
 analogResult	KEYWORD1
+GevinoTouchPoint	KEYWORD1
 
 #######################################
 # Methods and Functions (KEYWORD2)
@@ -16,6 +17,17 @@ analogResult	KEYWORD1
 
 gevino_io_setup	KEYWORD2
 updateIO	KEYWORD2
+gevino_touch_setup	KEYWORD2
+gevino_touch_pin_setup	KEYWORD2
+gevino_touch_panel	KEYWORD2
+gevino_touch_found	KEYWORD2
+gevino_touch_is7	KEYWORD2
+gevino_touch_is10	KEYWORD2
+gevino_touch_name	KEYWORD2
+gevino_touch_down	KEYWORD2
+gevino_touch_read	KEYWORD2
+gevino_touch_points	KEYWORD2
+gevino_touch_gui_update	KEYWORD2
 analogPolling	KEYWORD2
 analogEnable	KEYWORD2
 analogReadExtended	KEYWORD2
@@ -87,3 +99,7 @@ CH376_INT	LITERAL1
 TouchInt	LITERAL1
 latchPinO	LITERAL1
 latchPinI	LITERAL1
+GEVINO_TOUCH_NONE	LITERAL1
+GEVINO_TOUCH_7	LITERAL1
+GEVINO_TOUCH_10	LITERAL1
+GEVINO_TOUCH_MAX_POINTS	LITERAL1
