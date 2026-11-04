@@ -93,10 +93,12 @@ output, Wi-Fi (internal or external antenna), Bluetooth, Ethernet (W5500), LoRa 
 
 ## Pinout / pin mapping
 
-Functions are exposed through named macros in [`src/gevino_tft_io.h`](src/gevino_tft_io.h). The 8
-outputs and 8 of the inputs are handled through a **74HC595 (output) / 74HC165 (input) shift-register
-chain** driven over SPI (refresh with `updateIO()`); the remaining 4 inputs are direct GPIO. Pin
-numbers refer to the Arduino SAMD (Arduino Zero) numbering.
+Functions are exposed through named macros in [`src/gevino_tft_io.h`](src/gevino_tft_io.h). Seven of
+the 8 outputs and 8 of the inputs are handled through a **74HC595 (output) / 74HC165 (input)
+shift-register chain** driven over SPI (refresh with `updateIO()`); the remaining 4 inputs and
+`Out0` are direct GPIO. The 74HC595's first stage, **Q0, is the display reset, not an output** — see
+the warning under [Outputs](#outputs). Pin numbers refer to the Arduino SAMD (Arduino Zero)
+numbering.
 
 ### Inputs (active = closed)
 
@@ -115,10 +117,22 @@ The direct inputs `In0`…`In3` are the high-speed / interrupt-capable ones.
 
 | Macro | Source | Set / Reset |
 |-------|--------|-------------|
-| `Out0` | pin 44 (PA30), direct | `setOut0` / `resOut0` |
-| `Out1` … `Out7` | shift reg `OutReg` bits 1–7 | `setOut1`…`setOut7` / `resOut1`…`resOut7` |
+| `Out0` | pin 44 (PA30), direct GPIO | `setOut0` / `resOut0` |
+| `Out1` … `Out7` | shift reg `OutReg` bits 1–7 → 74HC595 Q1…Q7 | `setOut1`…`setOut7` / `resOut1`…`resOut7` |
+| *(not an output)* | 74HC595 **Q0 = RA8876 display RESET**, active low | `setReset` / `resReset` |
 
-Call **`updateIO()`** to push `OutReg` to the 74HC595 and read the 74HC165 into `InReg`.
+> ⚠️ **The output shift register is not eight outputs.** Its first stage, **Q0, is the display
+> reset** (active low), so only **Q1…Q7** carry outputs, and `Out0` is a CPU pin rather than a
+> shift-register bit. The reset state lives in its own variable, `TftReset`, which `updateIO()`
+> merges into the byte it shifts out, so **bit 0 of `OutReg` is ignored**.
+>
+> Drive the outputs with the macros, or with `writeOutputs(v)` / `clearOutputs()`. **Never assign
+> `OutReg` as a whole.** Before the reset was separated out, it lived in `OutReg` bit 0, and a
+> sketch doing `OutReg = 0;` — the natural way to clear the outputs — held the display in reset:
+> the panel went dark, every SPI read of the controller returned `0xFF`, and the library's
+> timeout-less wait loops hung forever. It looks exactly like a broken display.
+
+Call **`updateIO()`** to push the outputs to the 74HC595 and read the 74HC165 into `InReg`.
 
 ### Analog
 

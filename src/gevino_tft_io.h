@@ -34,8 +34,18 @@
       so include it in exactly ONE translation unit (your main .ino).
     - Call gevino_io_setup() in setup(), AFTER Serial2.begin()/Serial3.begin().
     - Do NOT initialise the I/O yourself: gevino_io_setup() does it for you.
+    - NEVER assign OutReg as a whole. The output shift register's first stage
+      (74HC595 Q0) is the RA8876 display RESET, not an output: only Q1..Q7 are
+      Out1..Out7, and Out0 is a CPU pin (D44). Use setOutN/resOutN, or
+      writeOutputs(v) / clearOutputs(). See section 3 for the full story.
 
   Changelog
+    03/11/2026   updateIO() now closes its SPI transaction (it opened one and
+                 never closed it, leaving the bus configured for the shift
+                 registers at 4 MHz SPI_MODE0 instead of the display at 12 MHz
+                 SPI_MODE3). The display reset moved out of OutReg bit 0 into
+                 its own variable TftReset, so assigning OutReg can no longer
+                 hold the panel in reset; added writeOutputs()/clearOutputs().
     22/11/2022   More output current on some pins (DRVSTR).
     08/06/2026   Bundled ATSAMD21_ADC.h and a Timer class into this header.
 */
@@ -301,12 +311,40 @@ void SERCOM2_Handler()  {   Serial3.IrqHandler(); }
 
 // =============================================================================
 // 3. Pin definitions and I/O macros (GEVA Elettronica)
-//    12 opto-isolated inputs and 8 opto-isolated outputs. The 8 outputs and
+//    12 opto-isolated inputs and 8 opto-isolated outputs. SEVEN outputs and
 //    8 of the inputs go through a 74HC595 (out) / 74HC165 (in) shift-register
 //    chain driven over SPI (see updateIO()); inputs In0..In3 are direct GPIO,
 //    4 of which are high-speed / interrupt capable.
+//
+//    THE OUTPUT SHIFT REGISTER IS NOT EIGHT OUTPUTS. Its first stage, Q0, is
+//    the RA8876 DISPLAY RESET, and it is ACTIVE LOW:
+//
+//      74HC595   signal                    how to drive it
+//      -------   -----------------------   ---------------------------------
+//      Q0        display RESET (low = in   setReset / resReset
+//                reset) - NOT an output
+//      Q1..Q7    Out1..Out7                setOut1..setOut7 / resOut1..resOut7
+//
+//    Out0 is not in the shift register at all: it is a CPU pin (D44, PA30),
+//    driven by setOut0 / resOut0. So the eight outputs are one GPIO plus the
+//    seven shift-register bits Q1..Q7.
+//
+//    The reset state lives in its OWN variable, TftReset, and updateIO()
+//    merges it into the byte it shifts out. Writing OutReg therefore cannot
+//    hold the display in reset any more. It used to: the reset bit sat in
+//    OutReg bit 0, so a sketch doing "OutReg = 0;" - the natural way to clear
+//    the outputs - held the RA8876 in reset. The panel went dark, every SPI
+//    read of the controller returned 0xFF and the library's timeout-less wait
+//    loops (waitWriteFifo, Check_BTE_Busy, the "wait for completion" loop in
+//    drawTwoPointShape) hung forever, which looks exactly like a faulty
+//    display. Drive the outputs with the macros, or with writeOutputs() /
+//    clearOutputs() below; never assign OutReg as a whole.
 // =============================================================================
 byte OutReg = 0, InReg = 0;
+
+// Display reset line, 74HC595 Q0, ACTIVE LOW: 1 = display running,
+// 0 = display held in reset. Deliberately NOT a bit of OutReg.
+byte TftReset = 1;
 
 //#define TestSDpin
 
@@ -348,8 +386,25 @@ byte OutReg = 0, InReg = 0;
 #define setOut0 digitalWrite(Out0_name, LOW)
 #define resOut0 digitalWrite(Out0_name, HIGH)
 #define Out0 (!digitalRead(Out0_name))
-#define setReset ClearBit(OutReg,0)
-#define resReset SetBit(OutReg,0)
+// Display reset (74HC595 Q0, active low). setReset holds the RA8876 in reset,
+// resReset lets it run; both need an updateIO() to reach the chip. These are
+// NOT general purpose outputs - gevino_io_setup() uses them to pulse the
+// display at boot, and a sketch has no reason to touch them afterwards.
+#define setReset (TftReset = 0)
+#define resReset (TftReset = 1)
+
+// The 7 shift-register outputs, Q1..Q7. Bit 0 is not an output: it is ignored
+// when the byte is shifted out, because updateIO() substitutes TftReset.
+#define OUT_SHIFT_MASK 0xFE
+
+// Write all 7 shift-register outputs at once (bit 1 = Out1 ... bit 7 = Out7).
+// Use this instead of assigning OutReg: bit 0 is masked off, so the display
+// reset can never be disturbed.
+inline void writeOutputs(byte v) { OutReg = v & OUT_SHIFT_MASK; }
+
+// Turn every shift-register output off (Out1..Out7). This is what a sketch
+// means when it writes "OutReg = 0", and unlike that it is safe.
+inline void clearOutputs(void)   { OutReg = 0; }
 #define setOut1 SetBit(OutReg,1)
 #define resOut1 ClearBit(OutReg,1)
 #define Out1    CheckBit(OutReg,1)
@@ -379,24 +434,40 @@ byte OutReg = 0, InReg = 0;
 // =============================================================================
 // 4. Shift-register I/O update and board setup (GEVA Elettronica)
 // =============================================================================
+// Pushes the outputs to the 74HC595 and samples the inputs from the 74HC165.
+//
+// The byte that goes out is Q1..Q7 from OutReg plus Q0 = TftReset, the display
+// reset line: bit 0 of OutReg is ignored, so assigning OutReg cannot park the
+// RA8876 in reset (see the warning at the top of section 3).
+//
+// Every SPI.beginTransaction() here is matched by an endTransaction(). It was
+// not: the transaction was opened and never closed, which left the bus owned
+// by this function and configured for the shift registers (4 MHz, SPI_MODE0)
+// instead of the display (12 MHz, SPI_MODE3). Any driver code that talks to
+// the RA8876 outside a transaction of its own - setTextColor() and the BTE
+// helpers do - then spoke to it at the wrong clock and the wrong SPI mode.
 void updateIO()  // 74HC595 Output + 74HC165 Input
 {
+  byte frame = (OutReg & OUT_SHIFT_MASK) | (TftReset ? 0x01 : 0x00);
+
 #if latchPinO != latchPinI
   SPI.beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE0));
   digitalWrite(latchPinI, LOW);
   digitalWrite(latchPinI, HIGH);
-  InReg = SPI.transfer(OutReg);
+  InReg = SPI.transfer(frame);
   digitalWrite(latchPinO, LOW);
   digitalWrite(latchPinO, HIGH);
+  SPI.endTransaction();
 #else
 // If there is only one wire as Latch In and Out, it reads the inputs of the
 // previous cycle. Call it twice to read the latest Input state.
   SPI.beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE0));
-  InReg = SPI.transfer(OutReg);
+  InReg = SPI.transfer(frame);
   digitalWrite(latchPinO, LOW);
   digitalWrite(latchPinI, LOW);
   digitalWrite(latchPinO, HIGH);
   digitalWrite(latchPinI, HIGH);
+  SPI.endTransaction();
 #endif
 }
 

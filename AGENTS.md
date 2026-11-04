@@ -42,7 +42,7 @@ The complete pin map is in [README.md](README.md) and in [`src/gevino_tft_io.h`]
 
 ## Shift-register I/O — call updateIO()
 
-8 outputs (`Out1`…`Out7`) and 8 inputs (`In4`…`In11`) live in a 74HC595/74HC165 chain, mirrored in
+7 outputs (`Out1`…`Out7`) and 8 inputs (`In4`…`In11`) live in a 74HC595/74HC165 chain, mirrored in
 the `OutReg` / `InReg` byte registers. The `setOutN`/`resOutN` macros only change `OutReg` bits and
 `In4`…`In11` only read `InReg` bits — you must call **`updateIO()`** to actually push outputs and
 sample inputs over SPI. `In0`…`In3` and `Out0` are direct GPIO and do not need `updateIO()`.
@@ -54,6 +54,32 @@ void loop() {
   updateIO();
 }
 ```
+
+### Never assign `OutReg` — Q0 is the display reset
+
+The output shift register is **not** eight outputs. Its first stage, **74HC595 Q0, is the RA8876
+display reset**, active low; only **Q1…Q7** are outputs, and `Out0` is a CPU pin (D44/PA30), not a
+shift-register bit. So: one GPIO plus seven shift bits.
+
+Change the outputs **only** through `setOutN` / `resOutN`, or through `writeOutputs(v)` (bit 1 =
+`Out1` … bit 7 = `Out7`) and `clearOutputs()`. Do not write `OutReg` as a whole, and do not build
+the byte yourself:
+
+```cpp
+clearOutputs();                     // correct: all outputs off
+writeOutputs(1 << n);               // correct: only output n on
+OutReg = 0;                         // WRONG, and it used to kill the display
+OutReg = (1 << n);                  // WRONG
+```
+
+The reset state is now kept in its own variable, `TftReset` (`setReset` / `resReset`), and
+`updateIO()` merges it into the byte it shifts out, so bit 0 of `OutReg` is ignored and the two
+wrong lines above are merely useless rather than fatal. They were fatal: the reset bit sat in
+`OutReg` bit 0, a sketch clearing the outputs held the RA8876 in reset, the panel went dark, every
+SPI read of the controller returned `0xFF`, and the library's timeout-less wait loops
+(`waitWriteFifo`, `Check_BTE_Busy`, the completion wait in `drawTwoPointShape`) hung forever. The
+symptom is indistinguishable from a faulty display, so if a board goes dark and the controller
+reads `0xFF`, suspect this before the hardware.
 
 ## Minimal sketch skeleton
 

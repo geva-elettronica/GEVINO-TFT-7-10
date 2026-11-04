@@ -37,6 +37,15 @@ hand, call `gevino_touch_setup()` once and the same sketch runs on either model.
 5. **Call `updateIO()`** to push outputs (`Out1`…`Out7`) and sample inputs (`In4`…`In11`): these go
    through a 74HC595/74HC165 shift-register chain mirrored in `OutReg`/`InReg`. `In0`…`In3` and
    `Out0` are direct GPIO. Write non-blocking, state-based code; avoid `delay()` in `loop()`.
+6. **Never assign `OutReg`.** The 74HC595's first stage, **Q0, is the RA8876 display reset** (active
+   low), so only Q1…Q7 are outputs and `Out0` is a CPU pin (D44). Change outputs with
+   `setOutN`/`resOutN`, or with `writeOutputs(v)` (bit 1 = `Out1` … bit 7 = `Out7`) and
+   `clearOutputs()` — never `OutReg = 0;` nor `OutReg = (1 << n);`. The reset now lives in its own
+   variable (`TftReset`, macros `setReset`/`resReset`) and `updateIO()` merges it in, so bit 0 of
+   `OutReg` is ignored. It did not use to be: clearing `OutReg` held the display in reset, the panel
+   went dark and every SPI read of the controller returned `0xFF`, hanging the library's
+   timeout-less wait loops forever — identical to a faulty display. If a board goes dark and the
+   controller reads `0xFF`, suspect this before the hardware.
 
 ## Skeleton
 
