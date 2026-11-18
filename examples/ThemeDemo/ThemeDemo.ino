@@ -203,7 +203,9 @@ static const Theme THEMES[N_THEMES] = {
 enum { S_THEME0 = 0, S_THEME1, S_THEME2,     // selector at the bottom
        S_BTN_LIGHT, S_BTN_CLIMATE, S_BTN_ROUND,
        S_SLIDER, S_PROGRESS, S_CHECK, S_TOGGLE,
-       S_HEADER, S_PANEL, S_MAX };
+       S_HEADER, S_PANEL,
+       S_TSENS, S_TSENS_LBL,                 // touch sensitivity (FLUO page)
+       S_MAX };
 
 #define MAX_PAGE  N_THEMES
 #define MAX_ELEM  S_MAX
@@ -218,6 +220,7 @@ gslc_tsElem     m_asElem[N_THEMES][MAX_ELEM];
 gslc_tsElemRef  m_asElemRef[N_THEMES][MAX_ELEM];
 
 gslc_tsXSlider    m_sSlider[N_THEMES];
+gslc_tsXSlider    m_sTSens;                  // only one: it lives on the FLUO page
 gslc_tsXProgress  m_sProgress[N_THEMES];
 gslc_tsXCheckbox  m_sCheck[N_THEMES];
 gslc_tsXTogglebtn m_sToggle[N_THEMES];
@@ -246,6 +249,42 @@ static uint32_t g_manualUntil = 0;
 static uint32_t g_seconds  = 0;
 
 static uint32_t tLed = 0, tSym = 0, tAnim = 0, tSec = 0, tSw = 0;
+
+// ------------------------------- touch sensitivity (10" GT9271, 7" FT5206) --
+//
+// The GT9271 decides what is a touch with two thresholds in its config block:
+//   0x8053 Screen_Touch_Level  (a finger is DOWN above this)
+//   0x8054 Screen_Leave_Level  (and UP again below this)
+// Lower = more sensitive. The block 0x8047..0x80FE is protected by a checksum
+// at 0x80FF; writing 1 to 0x8100 makes the controller load the new block.
+//
+// The new values live in the controller only until the power goes off: the
+// sketch never stores them anywhere, and at every boot it starts from the
+// controller's default again. If your controller turned out to keep them
+// across a power cycle, put its factory touch level here (it is printed on
+// SerialUSB at boot) and setup() will write it back every time.
+//
+// 7" (FT5206): one threshold, register 0x80 (ID_G_THGROUP), lower = more
+// sensitive. It is a RAM register: it goes back to the factory value at every
+// power-up by itself.
+#define TSENS_FACTORY_LEVEL  0          // 10" only; 0 = take what the chip has
+#define TSENS_LEVEL_MIN     20          // 10": slider at 100 = most sensitive
+#define TSENS_LEVEL_MAX    160          // 10": slider at   0 = least sensitive
+#define TSENS_FT_MIN        10          // 7": slider at 100
+#define TSENS_FT_MAX       120          // 7": slider at   0
+#define FT5206_REG_THGROUP 0x80
+
+static uint8_t  g_tsensMin = TSENS_LEVEL_MIN;   // range of the fitted chip
+static uint8_t  g_tsensMax = TSENS_LEVEL_MAX;
+#define TSENS_CFG_START  0x8047
+#define TSENS_CFG_LEN       184         // 0x8047..0x80FE
+
+static bool     g_tsensOk      = false; // 10" panel, config read correctly
+static uint8_t  g_tsensDefTouch = 0;    // defaults read at boot
+static uint8_t  g_tsensDefLeave = 0;
+static int16_t  g_tsensPos     = 50;    // 0..100 shown on the slider
+static bool     g_tsensPending = false; // slider moved, not yet written
+static uint32_t g_tsensMoved   = 0;
 
 #define TH   (THEMES[g_theme])
 
@@ -509,6 +548,181 @@ static bool CbDrawPanel(void* pvGui, void* pvElemRef, gslc_teRedrawType eR)
   return true;
 }
 
+// ------------------------------------------------- GT9271 config access ---
+
+static bool Gt9271Read(uint16_t nReg, uint8_t* pBuf, uint8_t nLen)
+{
+  Wire.beginTransmission((uint8_t)GEVINO_TOUCH_GT9271_ADDR);
+  Wire.write((uint8_t)(nReg >> 8));
+  Wire.write((uint8_t)(nReg & 0xFF));
+  if (Wire.endTransmission() != 0) return false;
+  Wire.requestFrom((uint8_t)GEVINO_TOUCH_GT9271_ADDR, nLen);
+  uint8_t i;
+  for (i = 0; (i < nLen) && Wire.available(); i++) pBuf[i] = Wire.read();
+  return i == nLen;
+}
+
+static bool Gt9271Write(uint16_t nReg, const uint8_t* pVal, uint8_t nCnt)
+{
+  Wire.beginTransmission((uint8_t)GEVINO_TOUCH_GT9271_ADDR);
+  Wire.write((uint8_t)(nReg >> 8));
+  Wire.write((uint8_t)(nReg & 0xFF));
+  for (uint8_t i = 0; i < nCnt; i++) Wire.write(pVal[i]);
+  return Wire.endTransmission() == 0;
+}
+
+// Read the whole config block (in small chunks, to stay well inside the Wire
+// buffer).
+static bool Gt9271ReadCfg(uint8_t* pCfg)
+{
+  for (uint16_t off = 0; off < TSENS_CFG_LEN; off += 23) {
+    uint8_t n = (TSENS_CFG_LEN - off) < 23 ? (TSENS_CFG_LEN - off) : 23;
+    if (!Gt9271Read(TSENS_CFG_START + off, pCfg + off, n)) return false;
+  }
+  return true;
+}
+
+// Write the two thresholds, a fresh checksum and the "reload" flag.
+static bool Gt9271SetLevels(uint8_t nTouch, uint8_t nLeave)
+{
+  uint8_t cfg[TSENS_CFG_LEN];
+  if (!Gt9271ReadCfg(cfg)) return false;
+
+  cfg[0x8053 - TSENS_CFG_START] = nTouch;
+  cfg[0x8054 - TSENS_CFG_START] = nLeave;
+
+  uint8_t sum = 0;
+  for (uint16_t i = 0; i < TSENS_CFG_LEN; i++) sum += cfg[i];
+  uint8_t tail[2] = { (uint8_t)(~sum + 1), 1 };    // 0x80FF checksum, 0x8100 fresh
+
+  uint8_t lv[2] = { nTouch, nLeave };
+  if (!Gt9271Write(0x8053, lv, 2)) return false;
+  return Gt9271Write(0x80FF, tail, 2);
+}
+
+// Slider 0..100 <-> touch level (inverted: more slider = lower threshold)
+static uint8_t TSensLevel(int16_t pos)
+{
+  return (uint8_t)(g_tsensMax - (int32_t)(g_tsensMax - g_tsensMin) * pos / 100);
+}
+
+static int16_t TSensPos(uint8_t level)
+{
+  if (level >= g_tsensMax) return 0;
+  if (level <= g_tsensMin) return 100;
+  return (int16_t)((int32_t)(g_tsensMax - level) * 100 /
+                   (g_tsensMax - g_tsensMin));
+}
+
+// --- FT5206 (7"): 8-bit register addresses ---
+static bool Ft5206Read(uint8_t nReg, uint8_t* pVal)
+{
+  Wire.beginTransmission((uint8_t)GEVINO_TOUCH_FT5206_ADDR);
+  Wire.write(nReg);
+  if (Wire.endTransmission() != 0) return false;
+  Wire.requestFrom((uint8_t)GEVINO_TOUCH_FT5206_ADDR, (uint8_t)1);
+  if (!Wire.available()) return false;
+  *pVal = Wire.read();
+  return true;
+}
+
+static bool Ft5206Write(uint8_t nReg, uint8_t nVal)
+{
+  Wire.beginTransmission((uint8_t)GEVINO_TOUCH_FT5206_ADDR);
+  Wire.write(nReg);
+  Wire.write(nVal);
+  return Wire.endTransmission() == 0;
+}
+
+static void TSensApply(void)
+{
+  uint8_t nTouch = TSensLevel(g_tsensPos);
+  if (gevino_touch_is7()) {
+    bool ok = Ft5206Write(FT5206_REG_THGROUP, nTouch);
+    SerialUSB.print("Touch threshold -> "); SerialUSB.print(nTouch);
+    SerialUSB.println(ok ? "" : "  (I2C error)");
+    return;
+  }
+  // keep the factory ratio between the "down" and the "up" threshold
+  uint8_t nLeave = g_tsensDefTouch
+      ? (uint8_t)((uint16_t)nTouch * g_tsensDefLeave / g_tsensDefTouch)
+      : (uint8_t)(nTouch * 3 / 4);
+  if (nLeave >= nTouch) nLeave = nTouch - 1;
+  bool ok = Gt9271SetLevels(nTouch, nLeave);
+  SerialUSB.print("Touch level -> "); SerialUSB.print(nTouch);
+  SerialUSB.print(" / ");             SerialUSB.print(nLeave);
+  SerialUSB.println(ok ? "" : "  (I2C error)");
+}
+
+static void TSensSetup(void)
+{
+  if (gevino_touch_is7()) {
+    uint8_t th;
+    if (!Ft5206Read(FT5206_REG_THGROUP, &th) || th == 0) return;
+    SerialUSB.print("FT5206 touch threshold at boot: "); SerialUSB.println(th);
+    g_tsensMin = TSENS_FT_MIN;
+    g_tsensMax = TSENS_FT_MAX;
+    if (th < g_tsensMin) g_tsensMin = th;     // keep the default reachable
+    if (th > g_tsensMax) g_tsensMax = th;
+    g_tsensDefTouch = th;
+    g_tsensPos = TSensPos(th);
+    g_tsensOk  = true;
+    return;
+  }
+  if (!gevino_touch_is10()) return;
+  uint8_t lv[2];
+  if (!Gt9271Read(0x8053, lv, 2) || lv[0] == 0) return;
+  g_tsensDefTouch = lv[0];
+  g_tsensDefLeave = lv[1];
+  SerialUSB.print("GT9271 touch level at boot: "); SerialUSB.print(lv[0]);
+  SerialUSB.print(" / ");                          SerialUSB.println(lv[1]);
+
+#if TSENS_FACTORY_LEVEL > 0
+  if (g_tsensDefTouch != TSENS_FACTORY_LEVEL) {
+    g_tsensDefLeave = (uint8_t)((uint16_t)TSENS_FACTORY_LEVEL * g_tsensDefLeave
+                                / g_tsensDefTouch);
+    g_tsensDefTouch = TSENS_FACTORY_LEVEL;
+    Gt9271SetLevels(g_tsensDefTouch, g_tsensDefLeave);
+  }
+#endif
+
+  g_tsensPos = TSensPos(g_tsensDefTouch);
+  g_tsensOk  = true;
+}
+
+// Label to the left of the sensitivity slider
+static bool CbDrawTSensLbl(void* pvGui, void* pvElemRef, gslc_teRedrawType eR)
+{
+  (void)eR;
+  gslc_tsGui*     pGui = (gslc_tsGui*)pvGui;
+  gslc_tsElemRef* pRef = (gslc_tsElemRef*)pvElemRef;
+  gslc_tsElem*    pEl  = gslc_GetElemFromRef(pGui, pRef);
+  const Theme*    pT   = &THEMES[ID_THEME(pEl->nId)];
+  char ac[8];
+
+  ClearArea(Col565(pT->colBg), pEl->rElem.x, pEl->rElem.y,
+            pEl->rElem.w, pEl->rElem.h);
+  Text("TOUCH", pEl->rElem.x, pEl->rElem.y + 2, Col565(pT->colDim),
+       &notoSans_12pt);
+  snprintf(ac, sizeof(ac), "%d", g_tsensPos);
+  Text(ac, pEl->rElem.x, pEl->rElem.y + 22, Col565(pT->colAccent),
+       &notoSans_20pt);
+  gslc_ElemSetRedraw(pGui, pRef, GSLC_REDRAW_NONE);
+  return true;
+}
+
+// The sensitivity slider moved: written to the chip once the finger stops
+static bool CbTSensPos(void* pvGui, void* pvElem, int16_t nPos)
+{
+  (void)pvGui; (void)pvElem;
+  if (nPos == g_tsensPos) return true;
+  g_tsensPos     = nPos;
+  g_tsensPending = true;
+  g_tsensMoved   = millis();
+  Dirty(1, S_TSENS_LBL);
+  return true;
+}
+
 // ------------------------------------------------------------------- touch ---
 
 static void GoToTheme(uint8_t next)
@@ -653,6 +867,20 @@ static void CreatePage(uint8_t t)
     gslc_ElemSetDrawFunc(&m_gui, pRef, &CbDrawThemeBtn);
     m_pRef[t][S_THEME0 + i] = pRef;
   }
+
+  // ---- touch sensitivity, bottom right: FLUO page, 7" and 10" -------------
+  if (t == 1 && g_tsensOk) {
+    pRef = gslc_ElemCreateBox(&m_gui, ID(t, S_TSENS_LBL), t,
+             (gslc_tsRect){ 530, 503, 70, 50 });
+    gslc_ElemSetDrawFunc(&m_gui, pRef, &CbDrawTSensLbl);
+    m_pRef[t][S_TSENS_LBL] = pRef;
+
+    pRef = gslc_ElemXSliderCreate(&m_gui, ID(t, S_TSENS), t, &m_sTSens,
+             (gslc_tsRect){ 600, 503, 400, 48 }, 0, 100, g_tsensPos, 40, false);
+    gslc_ElemXSliderSetPosFunc(&m_gui, pRef, &CbTSensPos);
+    gslc_ElemSetDrawFunc(&m_gui, pRef, &CbDrawSlider);
+    m_pRef[t][S_TSENS] = pRef;
+  }
 }
 
 // ================================================================== setup =====
@@ -677,6 +905,10 @@ void setup()
   // One font slot is required by GUIslice even though every string in this
   // sketch is drawn by hand with a GEVA flash font.
   if (!gslc_FontSet(&m_gui, E_FONT_DUMMY, GSLC_FONTREF_PTR, &notoSans_20pt, 1)) return;
+
+  // Read the GT9271 thresholds before the pages are built: the FLUO page only
+  // gets the sensitivity slider when they could be read.
+  TSensSetup();
 
   for (uint8_t t = 0; t < N_THEMES; t++) CreatePage(t);
 
@@ -753,6 +985,13 @@ void loop()
       gslc_ElemXCheckboxSetState(&m_gui, m_pRef[g_theme][S_CHECK],
         !gslc_ElemXCheckboxGetState(&m_gui, m_pRef[g_theme][S_CHECK]));
     }
+  }
+
+  // --- touch sensitivity: write it once the slider has been still 300 ms ----
+  // (not while dragging: the GT9271 briefly reloads its config on every write)
+  if (g_tsensPending && (now - g_tsensMoved >= 300)) {
+    g_tsensPending = false;
+    TSensApply();
   }
 
   gslc_Update(&m_gui);
