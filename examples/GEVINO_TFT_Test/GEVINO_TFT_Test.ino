@@ -56,9 +56,11 @@ Ch376msc flashDrive(CH376_CS, CH376_INT); // chipSelect
 
 // ----------------------- CAN bus (MCP2515) -----------------------
 // Install https://github.com/sandeepmistry/arduino-CAN from Arduino Library Manager
-// Change on MCP2515.h
-byte MCP2515_DEFAULT_CS_PIN  =  5;
-byte MCP2515_DEFAULT_INT_PIN =  -1;
+// The library defaults to CS = D10, which on GEVINO is the TX of Serial2
+// (SERCOM1): CAN.begin() would turn D10 into a GPIO and kill Serial2.
+// So the pins are set at run time with CAN.setPins() before CAN.begin().
+#define CAN_CS_PIN   5    // MCP2515 chip-select on the expansion slot
+#define CAN_INT_PIN  -1   // interrupt not used
 #include <CAN.h>
 byte CanOk = 0;
 
@@ -130,6 +132,7 @@ void setup() {
   }
 
   // ---- CAN bus (MCP2515) ----
+  CAN.setPins(CAN_CS_PIN, CAN_INT_PIN);   // never leave the default CS = D10 (Serial2 TX)
   if (!CAN.begin(500E3)){
     tft.println("CAN FAIL");
     SerialUSB.println("CAN FAIL");
@@ -341,6 +344,9 @@ void loop() {
 
       set_Rs485_TxEn;
       Serial1.print("I'm happy ");         // Send on RS485
+
+      Serial2.print("RS232");              // Send on RS232
+
     }
   }
 
